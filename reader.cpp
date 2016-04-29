@@ -30,6 +30,8 @@ struct KinesisState
 {
 	KinesisClient *kc;
 	concurrent_queue<void*> *cq;
+	std::atomic<bool> keep_running;
+	std::thread *thread;
 };
 
 void*
@@ -38,26 +40,28 @@ kinesis_create()
 	std::string access_key_id;
 	std::string access_key_secret;
 
-	Aws::Utils::Logging::InitializeAWSLogging(Aws::MakeShared<Aws::Utils::Logging::DefaultLogSystem>("logging", Aws::Utils::Logging::LogLevel::Trace, "aws_sdk_"));
+//	Aws::Utils::Logging::InitializeAWSLogging(Aws::MakeShared<Aws::Utils::Logging::DefaultLogSystem>("logging", Aws::Utils::Logging::LogLevel::Trace, "aws_sdk_"));
 
 	get_credentials(access_key_id, access_key_secret);
 	AWSCredentials creds(access_key_id.c_str(), access_key_secret.c_str());
 
 	ClientConfiguration config;
 	config.region = Aws::Region::US_WEST_2;
-	config.endpointOverride = "localhost:4433";
+//	config.endpointOverride = "localhost:4433";
 	config.verifySSL = false;
 
 	KinesisClient *kc = new KinesisClient(creds, config);
-	concurrent_queue<void*> *cq = new concurrent_queue<void*>(3);
+	concurrent_queue<void*> *cq = new concurrent_queue<void*>(1);
+	return new KinesisState{kc, cq, {true}, NULL};
+}
 
-//	GetShardIteratorRequest request;
-//	request.SetStreamName("test");
-//	request.SetShardId("shardId-000000000000");
-//    request.SetShardIteratorType(ShardIteratorType::TRIM_HORIZON);
-//	std::cout << request.SerializePayload();
+void
+kinesis_destroy(void *k)
+{
+	KinesisState *ks = (KinesisState*)(k);
 
-	return new KinesisState{kc, cq};
+	if (ks->keep_running)
+		kinesis_stop(ks);
 }
 
 void consume_thread(void *k)
@@ -85,7 +89,7 @@ void consume_thread(void *k)
 	Aws::String shard_iter = outcome.GetResult().GetShardIterator();
 	GetRecordsRequest req;
 
-	while (true)
+	while (ks->keep_running)
 	{
 		req.SetShardIterator(shard_iter);
 		req.SetLimit(1000);
@@ -95,64 +99,52 @@ void consume_thread(void *k)
 
 		if (new_rec_out->IsSuccess())
 		{
-			const Aws::Vector<Record> &records = 
-				new_rec_out->GetResult().GetRecords();
-
 			shard_iter = new_rec_out->GetResult().GetNextShardIterator();
-			ks->cq->push(new_rec_out);
+			bool pushed = false;
+
+			while (!pushed && ks->keep_running)
+			{
+				pushed = ks->cq->push_with_timeout(new_rec_out, 1000);
+				std::cout << "producer pushed " << pushed << std::endl;
+			}
 		}
 		else
 		{
 			std::cout << "not success " << std::endl;
 		}
 
-		usleep(250000);
+		if (ks->keep_running)
+			usleep(250000);
 	}
+
+	std::cout << "consume thread stopping" << std::endl;
 }
 
 void* 
-kinesis_consume(void *k)
+kinesis_consume(void *k, int timeout)
 {
 	KinesisState *ks = (KinesisState*)(k);
 	void *rec = 0;
 
-	ks->cq->wait_and_pop(rec);
-
-	return rec;
+	bool popped = ks->cq->pop_with_timeout(rec, timeout);
+	return popped ? rec : NULL;
 }
 
 void
 kinesis_start(void *k)
 {
-	std::thread t1(consume_thread, k);
-	t1.detach();
-
-//void independentThread() 
-//{
-//    std::cout << "Starting concurrent thread.\n";
-//    std::this_thread::sleep_for(std::chrono::seconds(2));
-//    std::cout << "Exiting concurrent thread.\n";
-//}
-// 
-//void threadCaller() 
-//{
-//    std::cout << "Starting thread caller.\n";
-//    std::thread t(independentThread);
-//    t.detach();
-//    std::this_thread::sleep_for(std::chrono::seconds(1));
-//    std::cout << "Exiting thread caller.\n";
-//}
-// 
-//int main() 
-//{
-//    threadCaller();
-//    std::this_thread::sleep_for(std::chrono::seconds(5));
-//}
+	KinesisState *ks = (KinesisState*)(k);
+	ks->thread = new std::thread(consume_thread, k);
+//	ks->thread->detach();
 }
 
 void
 kinesis_stop(void *k)
 {
+	KinesisState *ks = (KinesisState*)(k);
+
+	ks->keep_running = false;
+	ks->thread->join();
 }
 
 int64_t
@@ -188,7 +180,7 @@ record_get_partition_key(const void *rec)
 double
 record_get_arrival_time(const void *rec)
 {
-	return ((Record*)rec)->GetApproximateArrivalTimestamp();
+	return ((Record*)rec)->GetApproximateArrivalTimestamp().ComputeCurrentTimestampInAmazonFormat();
 }
 
 int

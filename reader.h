@@ -8,6 +8,8 @@ extern "C" {
 #include <stdint.h>
 
 void* kinesis_create();
+void kinesis_destroy(void *k);
+
 void kinesis_start(void *k);
 void kinesis_stop(void *k);
 int64_t record_batch_get_millis_behind_latest(void *rb);
@@ -20,8 +22,7 @@ int record_get_data_size(void *rec);
 const uint8_t* record_get_data(void *rec);
 
 void record_batch_destroy(void *rb);
-
-void* kinesis_consume(void *k);
+void* kinesis_consume(void *k, int timeout);
 
 #ifdef __cplusplus
 }

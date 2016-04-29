@@ -8,9 +8,18 @@ int main(int argc, char** argv)
 	void *kc = kinesis_create();
 	kinesis_start(kc);
 
+	int timeout = 1000;
+	int num = 0;
+
 	while (1)
 	{
-		void *rec = kinesis_consume(kc);
+		void *rec = kinesis_consume(kc, timeout);
+
+		if (!rec)
+		{
+			printf("main timeout\n");
+			continue;
+		}
 
 		printf("got rec %p %ld %d\n", rec,
 				record_batch_get_millis_behind_latest(rec),
@@ -32,4 +41,7 @@ int main(int argc, char** argv)
 
 		record_batch_destroy(rec);
 	}
+
+	printf("main stop\n");
+	kinesis_stop(kc);
 }

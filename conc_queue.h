@@ -22,60 +22,52 @@ public:
 	{
 	}
 
-    void push(Data const& data)
-    {
-		{
-			std::unique_lock<std::mutex> lock(mutex_);
-
-			while (max_ == queue_.size())
-			{
-				cond_var_has_space.wait(lock);
-			}
-
-			queue_.push(data);
-		}
-
-        cond_var_has_items.notify_one();
-    }
-
     bool empty() const
     {
 		std::unique_lock<std::mutex> lock(mutex_);
         return queue_.empty();
     }
 
-    bool try_pop(Data& popped_value)
+	bool push_with_timeout(Data const& data, int ms)
     {
 		{
 			std::unique_lock<std::mutex> lock(mutex_);
+			auto timeout = std::chrono::milliseconds(ms);
 
-			if(queue_.empty())
+			if (max_ == queue_.size())
 			{
-				return false;
+				cond_var_has_space.wait_for(lock, timeout);
 			}
 
-			popped_value=queue_.front();
-			queue_.pop();
+			if (max_ == queue_.size())
+				return false;
+
+			queue_.push(data);
 		}
 
-		cond_var_has_space.notify_one();
-        return true;
+        cond_var_has_items.notify_one();
+		return true;
     }
 
-    void wait_and_pop(Data& popped_value)
+	bool pop_with_timeout(Data& popped_value, int ms)
     {
 		{
 			std::unique_lock<std::mutex> lock(mutex_);
+			auto timeout = std::chrono::milliseconds(ms);
 
-			while(queue_.empty())
+			if (queue_.empty())
 			{
-				cond_var_has_items.wait(lock);
+				cond_var_has_items.wait_for(lock, timeout);
 			}
 
-			popped_value=queue_.front();
+			if (queue_.empty())
+				return false;
+
+			popped_value = queue_.front();
 			queue_.pop();
 		}
 
 		cond_var_has_space.notify_one();
+		return true;
     }
 };
