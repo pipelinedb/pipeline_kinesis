@@ -16,6 +16,13 @@ int main(int argc, char** argv)
 	signal(SIGINT, sighandle);
 
 	kinesis_consumer *kc = kinesis_consumer_create();
+
+	if (!kc)
+	{
+		fprintf(stderr, "failed to connect to kinesis\n");
+		return 1;
+	}
+
 	kinesis_consumer_start(kc);
 
 	int timeout = 1000;
