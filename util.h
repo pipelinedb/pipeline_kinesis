@@ -44,5 +44,6 @@ void get_credentials(std::string &access_key_id,
 		}
 	}
 
+	free(lptr);
 	fclose(file);
 }

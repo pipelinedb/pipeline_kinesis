@@ -3,19 +3,22 @@
 #include <aws/kinesis/KinesisClient.h>
 #include <aws/core/client/ClientConfiguration.h>
 #include <aws/core/auth/AWSCredentialsProviderChain.h>
+#include <unordered_set>
 #include <aws/kinesis/model/GetRecordsResult.h>
 #include <aws/kinesis/model/GetShardIteratorResult.h>
 #include <aws/kinesis/model/GetShardIteratorRequest.h>
 #include <aws/core/utils/Outcome.h>
 #include <aws/core/utils/logging/AWSLogging.h>
 #include <aws/core/utils/logging/DefaultLogSystem.h>
+#include <aws/kinesis/model/GetRecordsRequest.h>
 
 #include <stdlib.h>
 #include <unordered_set>
 #include <functional>
 #include <unistd.h>
+#include <sys/time.h>
+
 #include "util.h"
-#include <aws/kinesis/model/GetRecordsRequest.h>
 
 using namespace Aws::Auth;
 using namespace Aws::Client;
@@ -26,45 +29,96 @@ using namespace Aws::Kinesis::Model;
 #include "reader.h"
 #include "conc_queue.h"
 
-struct KinesisState
+struct kinesis_consumer
 {
 	KinesisClient *kc;
-	concurrent_queue<void*> *cq;
+	concurrent_queue<GetRecordsOutcome*> *cq;
 	std::atomic<bool> keep_running;
 	std::thread *thread;
 };
 
-void*
-kinesis_create()
+// KinesisClient
+
+//class AltRetryStrategy : public RetryStrategy
+//{
+//public:
+//    AltRetryStrategy(long maxRetries = 10, long scaleFactor = 25) :
+//        m_scaleFactor(scaleFactor), m_maxRetries(maxRetries)  
+//    {}
+//
+//    bool ShouldRetry(const AWSError<CoreErrors>& error, long attemptedRetries)
+//	{
+//	}
+//
+//    long CalculateDelayBeforeNextRetry(const AWSError<CoreErrors>& error, long attemptedRetries) const
+//	{
+//	}
+//
+//private:
+//    long m_scaleFactor;
+//    long m_maxRetries;
+//};
+
+// DefaultRetryStrategy
+
+static void consume_thread(void *k);
+
+kinesis_consumer*
+kinesis_consumer_create()
 {
 	std::string access_key_id;
 	std::string access_key_secret;
 
-//	Aws::Utils::Logging::InitializeAWSLogging(Aws::MakeShared<Aws::Utils::Logging::DefaultLogSystem>("logging", Aws::Utils::Logging::LogLevel::Trace, "aws_sdk_"));
+	Aws::Utils::Logging::InitializeAWSLogging(Aws::MakeShared<Aws::Utils::Logging::DefaultLogSystem>("logging", Aws::Utils::Logging::LogLevel::Trace, "aws_sdk_"));
 
 	get_credentials(access_key_id, access_key_secret);
 	AWSCredentials creds(access_key_id.c_str(), access_key_secret.c_str());
 
 	ClientConfiguration config;
 	config.region = Aws::Region::US_WEST_2;
-//	config.endpointOverride = "localhost:4433";
+	config.endpointOverride = "localhost:4433";
 	config.verifySSL = false;
 
-	KinesisClient *kc = new KinesisClient(creds, config);
-	concurrent_queue<void*> *cq = new concurrent_queue<void*>(1);
-	return new KinesisState{kc, cq, {true}, NULL};
+	auto *kc = new KinesisClient(creds, config);
+	auto *cq = new concurrent_queue<GetRecordsOutcome*>(1);
+	return new kinesis_consumer{kc, cq, {true}, NULL};
 }
 
 void
-kinesis_destroy(void *k)
+kinesis_consumer_start(kinesis_consumer *kc)
 {
-	KinesisState *ks = (KinesisState*)(k);
-
-	if (ks->keep_running)
-		kinesis_stop(ks);
+	kc->thread = new std::thread(consume_thread, kc);
 }
 
-void consume_thread(void *k)
+void
+kinesis_consumer_stop(kinesis_consumer *kc)
+{
+	kc->keep_running = false;
+	kc->thread->join();
+
+	delete kc->thread;
+}
+
+void
+kinesis_consumer_destroy(kinesis_consumer *kc)
+{
+	if (kc->keep_running)
+		kinesis_consumer_stop(kc);
+
+	delete kc->cq;
+	delete kc->kc;
+	delete kc;
+}
+
+static double
+get_time()
+{
+    struct timeval tv;
+    gettimeofday(&tv, 0);
+    return tv.tv_sec + (tv.tv_usec / 1000000.0);
+}
+
+static void consume_thread(void *k)
 {
 	GetShardIteratorRequest request;
 
@@ -72,19 +126,25 @@ void consume_thread(void *k)
 	request.SetShardId("shardId-000000000000");
     request.SetShardIteratorType(ShardIteratorType::TRIM_HORIZON);
 
-	KinesisState *ks = (KinesisState*)(k);
+	kinesis_consumer *ks = (kinesis_consumer*)(k);
 	KinesisClient &kc = *ks->kc;
 
 	auto outcome = kc.GetShardIterator(request);
 
-	if (outcome.IsSuccess())
+	// connecting to the stream and getting a shard iterator etc
+	// should probably be blocking.
+
+	if (!outcome.IsSuccess())
 	{
+		return;
 //		std::cout << outcome.GetResult().GetShardIterator();
 	}
 	else
 	{
 //		std::cout << outcome.GetError().GetMessage();
 	}
+
+	double last_request_time = 0.0;
 
 	Aws::String shard_iter = outcome.GetResult().GetShardIterator();
 	GetRecordsRequest req;
@@ -95,6 +155,8 @@ void consume_thread(void *k)
 		req.SetLimit(1000);
 
 		GetRecordsOutcome *new_rec_out = new GetRecordsOutcome();
+
+		last_request_time = get_time();
 		*new_rec_out = kc.GetRecords(req);
 
 		if (new_rec_out->IsSuccess())
@@ -105,98 +167,91 @@ void consume_thread(void *k)
 			while (!pushed && ks->keep_running)
 			{
 				pushed = ks->cq->push_with_timeout(new_rec_out, 1000);
-				std::cout << "producer pushed " << pushed << std::endl;
+				printf("%3.6f producer pushed %d\n", last_request_time, pushed);
 			}
 		}
 		else
 		{
-			std::cout << "not success " << std::endl;
+			printf("unsuccessful request\n");
 		}
 
 		if (ks->keep_running)
-			usleep(250000);
+		{
+			double time_now = get_time();
+			double delta = time_now - last_request_time;
+
+			double sleep_time = 0.25 - delta;
+
+			if (sleep_time > 0.0)
+				usleep(sleep_time * 1000000.0);
+		}
 	}
 
-	std::cout << "consume thread stopping" << std::endl;
+	printf("consume thread stopping\n");
 }
 
-void* 
-kinesis_consume(void *k, int timeout)
+const kinesis_batch*
+kinesis_consume(kinesis_consumer *kc, int timeout)
 {
-	KinesisState *ks = (KinesisState*)(k);
-	void *rec = 0;
-
-	bool popped = ks->cq->pop_with_timeout(rec, timeout);
-	return popped ? rec : NULL;
-}
-
-void
-kinesis_start(void *k)
-{
-	KinesisState *ks = (KinesisState*)(k);
-	ks->thread = new std::thread(consume_thread, k);
-//	ks->thread->detach();
-}
-
-void
-kinesis_stop(void *k)
-{
-	KinesisState *ks = (KinesisState*)(k);
-
-	ks->keep_running = false;
-	ks->thread->join();
+	GetRecordsOutcome *outcome = NULL;
+	bool popped = kc->cq->pop_with_timeout(outcome, timeout);
+	return popped ? (const kinesis_batch*) outcome : NULL;
 }
 
 int64_t
-record_batch_get_millis_behind_latest(void *rb)
+kinesis_batch_get_millis_behind_latest(const kinesis_batch *rb)
 {
-	return ((GetRecordsOutcome*)rb)->GetResult().GetMillisBehindLatest();
+	return ((const GetRecordsOutcome*)rb)->GetResult().GetMillisBehindLatest();
 }
 
 int
-record_batch_get_size(void *rb)
+kinesis_batch_get_size(const kinesis_batch *rb)
 {
-	return ((GetRecordsOutcome*)rb)->GetResult().GetRecords().size();
+	return ((const GetRecordsOutcome*)rb)->GetResult().GetRecords().size();
 }
 
-const void*
-record_batch_get_record(void *rb, int i)
+const kinesis_record*
+kinesis_batch_get_record(const kinesis_batch *rb, int i)
 {
-	return &((GetRecordsOutcome*)rb)->GetResult().GetRecords()[i];
+	auto o = (const GetRecordsOutcome*) rb;
+	auto r = &(o->GetResult().GetRecords()[i]);
+
+	return (const kinesis_record*) r;
+}
+
+void
+kinesis_batch_destroy(const kinesis_batch *rb)
+{
+	delete (const GetRecordsOutcome*)(rb);
 }
 
 const char*
-record_get_sequence_number(const void *rec)
+kinesis_record_get_sequence_number(const kinesis_record *rec)
 {
 	return ((Record*)rec)->GetSequenceNumber().c_str();
 }
 
 const char*
-record_get_partition_key(const void *rec)
+kinesis_record_get_partition_key(const kinesis_record *rec)
 {
 	return ((Record*)rec)->GetPartitionKey().c_str();
 }
 
 double
-record_get_arrival_time(const void *rec)
+kinesis_record_get_arrival_time(const kinesis_record *rec)
 {
 	return ((Record*)rec)->GetApproximateArrivalTimestamp().ComputeCurrentTimestampInAmazonFormat();
 }
 
 int
-record_get_data_size(void *rec)
+kinesis_record_get_data_size(const kinesis_record *rec)
 {
 	return ((Record*)rec)->GetData().GetLength();
 }
 
 const uint8_t*
-record_get_data(void *rec)
+kinesis_record_get_data(const kinesis_record *rec)
 {
 	return ((Record*)rec)->GetData().GetUnderlyingData();
 }
 
-void
-record_batch_destroy(void *rb)
-{
-	delete (GetRecordsOutcome*)(rb);
-}

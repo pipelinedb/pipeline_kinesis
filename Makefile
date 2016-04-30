@@ -3,10 +3,13 @@
 #aws_sdk:
 #	git clone $(AWS_REPO)
 
+MODE := Debug
+
 all: pipeline_kinesis
 
-reader.o: reader.cpp conc_queue.h
+reader.o: reader.cpp reader.h conc_queue.h
 	g++ \
+	-g \
 	-DAWS_CUSTOM_MEMORY_MANAGEMENT \
 	-DAWS_SDK_PLATFORM_LINUX \
 	-DENABLE_CURL_CLIENT \
@@ -25,7 +28,7 @@ main.o: main.c
 
 pipeline_kinesis: main.o reader.o conc_queue.h
 	g++ -g main.o reader.o -o pipeline_kinesis \
-		-L/usr/local/lib/linux/intel64/Release \
+		-L/usr/local/lib/linux/intel64/$(MODE) \
 	-laws-cpp-sdk-core \
 	-laws-cpp-sdk-kinesis \
 	-lpthread

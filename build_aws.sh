@@ -15,6 +15,6 @@ git checkout tags/$VERSION
 mkdir build
 cd build
 
-cmake -DBUILD_ONLY=aws-cpp-sdk-kinesis -DCMAKE_BUILD_TYPE=Release ../
+cmake -DBUILD_ONLY=aws-cpp-sdk-kinesis -DCMAKE_BUILD_TYPE=Debug ../
 make VERBOSE=1
 sudo make install
