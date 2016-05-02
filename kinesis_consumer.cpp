@@ -137,7 +137,7 @@ kinesis_consumer_destroy(kinesis_consumer *kc)
 }
 
 // consumer thread continuously loops requesting records until the shard
-// is finished or it is signalled to stop (via kc->keep_running)
+// is finished or it is signalled to stop (via kc->keep_running).
 static void
 consume_thread(kinesis_consumer *kc)
 {
@@ -157,15 +157,23 @@ consume_thread(kinesis_consumer *kc)
 		last_request_time = get_time();
 		*new_rec_out = client.GetRecords(req);
 
+		double now = get_time();
+
+		printf("%3.6f request time %3.6f\n", now, now - last_request_time);
+
 		if (new_rec_out->IsSuccess())
 		{
 			kc->shard_iter = new_rec_out->GetResult().GetNextShardIterator();
 			bool pushed = false;
 
+			int num_rec = kinesis_batch_get_size((kinesis_batch*) new_rec_out);
+
 			while (!pushed && kc->keep_running)
 			{
 				pushed = kc->queue->push_with_timeout(new_rec_out, 1000);
-				printf("%3.6f producer pushed %d\n", last_request_time, pushed);
+
+				if (pushed)
+					printf("%3.6f producer pushed %d\n", get_time(), num_rec);
 			}
 		}
 		else
@@ -173,6 +181,7 @@ consume_thread(kinesis_consumer *kc)
 			printf("unsuccessful request\n");
 		}
 
+		// Throttling logic
 		if (kc->keep_running)
 		{
 			double time_now = get_time();

@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <signal.h>
+#include <sys/time.h>
 
 #include "kinesis_consumer.h"
 
@@ -8,6 +9,14 @@ volatile int flag = 0;
 void sighandle(int s)
 {
 	flag = 1;
+}
+
+static double
+get_time()
+{
+    struct timeval tv;
+    gettimeofday(&tv, 0);
+    return tv.tv_sec + (tv.tv_usec / 1000000.0);
 }
 
 /*
@@ -51,9 +60,9 @@ int main(int argc, char** argv)
 			continue;
 		}
 
-		printf("got batch %p %ld %d\n", batch,
-				kinesis_batch_get_millis_behind_latest(batch),
-				kinesis_batch_get_size(batch));
+		printf("%3.6f consumer got %d behind %ld\n", get_time(),
+				kinesis_batch_get_size(batch),
+				kinesis_batch_get_millis_behind_latest(batch));
 
 		int size = kinesis_batch_get_size(batch);
 
