@@ -10,6 +10,14 @@ To run the program, you must first build and install the aws-cpp-sdk:
 ./build_aws.sh
 ```
 
+On ubuntu you may need to add the aws lib path to /etc/ld.so.conf.d, and
+run ldconfig
+
+```
+echo /usr/local/lib/linux/intel64/Debug | sudo tee /etc/ld.so.conf.d/aws.conf
+sudo ldconfig
+```
+
 Once that succeeds, you can build the test program ```pipeline_kinesis```:
 
 ```
