@@ -90,7 +90,6 @@ kinesis_set_logger(void *ctx, void (*l) (void *ctx, const char *s))
 kinesis_consumer*
 kinesis_consumer_create(const char *stream, const char *shard)
 {
-
 	ClientConfiguration config;
 	config.region = Aws::Region::US_WEST_2;
 	config.verifySSL = false;
@@ -106,6 +105,10 @@ kinesis_consumer_create(const char *stream, const char *shard)
 
 	printf("shard id %s\n", shard);
 
+	request.SetStreamName("test");
+	request.SetShardId("shardId-000000000000");
+	request.SetShardIteratorType(ShardIteratorType::TRIM_HORIZON);
+
 	auto outcome = kc->GetShardIterator(request);
 
 	if (!outcome.IsSuccess())
@@ -115,7 +118,6 @@ kinesis_consumer_create(const char *stream, const char *shard)
 	}
 
 	Aws::String shard_iter = outcome.GetResult().GetShardIterator();
-	printf("shard iter %s\n", shard_iter.c_str());
 
 	auto *cq = new concurrent_queue<GetRecordsOutcome*>(100);
 	return new kinesis_consumer{kc, cq, {true}, NULL, shard_iter};

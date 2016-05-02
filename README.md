@@ -7,12 +7,27 @@ At present, this consists of a C wrapper for the aws-cpp-sdk, and a test driver 
 To run the program, you must first build and install the aws-cpp-sdk:
 
 ```
+<<<<<<< HEAD
 ./build_aws.sh
 ```
 
 On ubuntu you may need to add the aws lib path to /etc/ld.so.conf.d, and
 run ldconfig
 
+=======
+git clone https://github.com/aws/aws-sdk-cpp
+cd aws-sdk-cpp
+git checkout tags/0.10.9
+mkdir build
+cd build
+
+cmake -DBUILD_ONLY=aws-cpp-sdk-kinesis -DCMAKE_BUILD_TYPE=Debug ../
+make VERBOSE=1
+sudo make install
+```
+
+On ubuntu you may need to add the aws lib path to /etc/ld.so.conf.d:
+>>>>>>> master
 ```
 echo /usr/local/lib/linux/intel64/Debug | sudo tee /etc/ld.so.conf.d/aws.conf
 sudo ldconfig
