@@ -102,5 +102,6 @@ int main(int argc, char** argv)
 		}
 	}
 
-//	kinesis_consumer_destroy(kc);
+	for (i = 0; i < 2; ++i)
+		kinesis_consumer_destroy(kcs[i]);
 }
