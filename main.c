@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <signal.h>
-#include "reader.h"
+
+#include "kinesis_consumer.h"
 
 volatile int flag = 0;
 

@@ -1,7 +1,6 @@
 #include <aws/kinesis/KinesisClient.h>
 #include <aws/core/client/ClientConfiguration.h>
 #include <aws/core/auth/AWSCredentialsProviderChain.h>
-#include <unordered_set>
 #include <aws/kinesis/model/GetRecordsResult.h>
 #include <aws/kinesis/model/GetShardIteratorResult.h>
 #include <aws/kinesis/model/GetShardIteratorRequest.h>
@@ -12,9 +11,8 @@
 #include <aws/core/client/RetryStrategy.h>
 #include <aws/core/utils/logging/FormattedLogSystem.h>
 
-#include "reader.h"
-#include "conc_queue.h"
-#include "util.h"
+#include "kinesis_consumer.h"
+#include "conc_queue.hpp"
 
 #include <unordered_set>
 #include <functional>
@@ -30,7 +28,6 @@ using namespace Aws::Client;
 using namespace Aws::Kinesis;
 using namespace Aws::Kinesis::Model;
 using namespace Aws::Utils;
-
 
 struct kinesis_consumer
 {
@@ -91,21 +88,14 @@ static void consume_thread(kinesis_consumer *kc);
 kinesis_consumer*
 kinesis_consumer_create()
 {
-	std::string access_key_id;
-	std::string access_key_secret;
-
 	Aws::Utils::Logging::InitializeAWSLogging(Aws::MakeShared<AltLogSystem>("logging", Aws::Utils::Logging::LogLevel::Error));
-
-	get_credentials(access_key_id, access_key_secret);
-	AWSCredentials creds(access_key_id.c_str(), access_key_secret.c_str());
 
 	ClientConfiguration config;
 	config.region = Aws::Region::US_WEST_2;
-//	config.endpointOverride = "localhost:4433";
 	config.verifySSL = false;
 	
 	config.retryStrategy = Aws::MakeShared<AltRetryStrategy>("kinesis_consumer");
-	auto *kc = new KinesisClient(creds, config);
+	auto *kc = new KinesisClient(config);
 
 	GetShardIteratorRequest request;
 

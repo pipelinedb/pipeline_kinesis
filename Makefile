@@ -1,13 +1,8 @@
-#AWS_REPO := https://github.com/aws/aws-sdk-cpp
-#
-#aws_sdk:
-#	git clone $(AWS_REPO)
-
 MODE := Debug
 
 all: pipeline_kinesis
 
-reader.o: reader.cpp reader.h conc_queue.h
+kinesis_consumer.o: kinesis_consumer.cpp kinesis_consumer.h conc_queue.hpp
 	g++ \
 	-g \
 	-DAWS_CUSTOM_MEMORY_MANAGEMENT \
@@ -17,17 +12,17 @@ reader.o: reader.cpp reader.h conc_queue.h
 	-DJSON_USE_EXCEPTION=0 \
 	-Wall \
 	-c \
-	reader.cpp \
+	kinesis_consumer.cpp \
 	-std=c++11 \
 	-Wextra \
 	-Wno-comment \
-	-o reader.o
+	-o kinesis_consumer.o
 
-main.o: main.c
+main.o: main.c kinesis_consumer.h
 	gcc -g -c main.c -o main.o
 
-pipeline_kinesis: main.o reader.o conc_queue.h
-	g++ -g main.o reader.o -o pipeline_kinesis \
+pipeline_kinesis: main.o kinesis_consumer.o conc_queue.hpp
+	g++ -g main.o kinesis_consumer.o -o pipeline_kinesis \
 		-L/usr/local/lib/linux/intel64/$(MODE) \
 	-laws-cpp-sdk-core \
 	-laws-cpp-sdk-kinesis \
