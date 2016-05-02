@@ -19,6 +19,11 @@ get_time()
     return tv.tv_sec + (tv.tv_usec / 1000000.0);
 }
 
+void log_fn(void *ctx, const char *s)
+{
+	fprintf(stderr, "%s", s);
+}
+
 /*
  * Simple C driver for kinesis_consumer.h
  *
@@ -35,52 +40,67 @@ get_time()
 int main(int argc, char** argv)
 {
 	int i = 0;
+	int c = 0;
 	signal(SIGINT, sighandle);
 
-	kinesis_consumer *kc = kinesis_consumer_create();
+	kinesis_set_logger(NULL, log_fn);
+	kinesis_consumer *kcs[2];
 
-	if (!kc)
+	for (i = 0; i < 2; ++i)
 	{
-		fprintf(stderr, "failed to connect to kinesis\n");
-		return 1;
+		char buf[32]; sprintf(buf, "%d", i);
+		kcs[i] = kinesis_consumer_create("test", buf);
+
+		if (!kcs[i])
+		{
+			fprintf(stderr, "failed to connect to shard %s\n", buf);
+			return 1;
+		}
 	}
 
-	kinesis_consumer_start(kc);
+	for (i = 0; i < 2; ++i)
+	{
+		kinesis_consumer_start(kcs[i]);
+	}
 
 	int timeout = 1000;
 	int num = 0;
 
 	while (!flag)
 	{
-		const kinesis_batch *batch = kinesis_consume(kc, timeout);
-
-		if (!batch)
+		for (c = 0; c < 2; ++c)
 		{
-			printf("main timeout\n");
-			continue;
+			kinesis_consumer *kc = kcs[c];
+			const kinesis_batch *batch = kinesis_consume(kc, timeout);
+
+			if (!batch)
+			{
+				printf("main timeout\n");
+				continue;
+			}
+
+			printf("%3.6f %d consumer got %d behind %ld\n", get_time(), c,
+					kinesis_batch_get_size(batch),
+					kinesis_batch_get_millis_behind_latest(batch));
+
+			int size = kinesis_batch_get_size(batch);
+
+			for (i = 0; i < size; ++i)
+			{
+				const kinesis_record *r = kinesis_batch_get_record(batch, i);
+				const char *pk = kinesis_record_get_partition_key(r);
+				double t = kinesis_record_get_arrival_time(r);
+
+				int n = kinesis_record_get_data_size(r);
+				const uint8_t *d = kinesis_record_get_data(r);
+				const char *seq = kinesis_record_get_sequence_number(r);
+
+				printf("%f rec pkey %s data %.*s seq %s\n", t, pk, n, d, seq);
+			}
+
+			kinesis_batch_destroy(batch);
 		}
-
-		printf("%3.6f consumer got %d behind %ld\n", get_time(),
-				kinesis_batch_get_size(batch),
-				kinesis_batch_get_millis_behind_latest(batch));
-
-		int size = kinesis_batch_get_size(batch);
-
-		for (i = 0; i < size; ++i)
-		{
-			const kinesis_record *r = kinesis_batch_get_record(batch, i);
-			const char *pk = kinesis_record_get_partition_key(r);
-			double t = kinesis_record_get_arrival_time(r);
-
-			int n = kinesis_record_get_data_size(r);
-			const uint8_t *d = kinesis_record_get_data(r);
-			const char *seq = kinesis_record_get_sequence_number(r);
-
-			printf("%f rec pkey %s data %.*s seq %s\n", t, pk, n, d, seq);
-		}
-
-		kinesis_batch_destroy(batch);
 	}
 
-	kinesis_consumer_destroy(kc);
+//	kinesis_consumer_destroy(kc);
 }
