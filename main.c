@@ -10,10 +10,22 @@ void sighandle(int s)
 	flag = 1;
 }
 
+/*
+ * Simple C driver for kinesis_consumer.h
+ *
+ * Continually consumes batches until SIGINT
+ *
+ * Note - a number of empty batches are returned from kinesis when
+ * consuming from TRIM_HORIZION.
+ *
+ * Empty batches are also returned when 'consuming' from the queue and there
+ * is no data.
+ *
+ * Hence, we use 'empty' batches as heartbeat messages.
+ */
 int main(int argc, char** argv)
 {
 	int i = 0;
-
 	signal(SIGINT, sighandle);
 
 	kinesis_consumer *kc = kinesis_consumer_create();

@@ -1,3 +1,12 @@
+/*-------------------------------------------------------------------------
+ *
+ * kinesis_consumer.cpp
+ *	  Implementation for kinesis consumer C wrapper
+ *
+ * Copyright (c) 2013-2016, PipelineDB
+ *
+ *-------------------------------------------------------------------------
+ */
 #include <aws/kinesis/KinesisClient.h>
 #include <aws/core/client/ClientConfiguration.h>
 #include <aws/core/auth/AWSCredentialsProviderChain.h>
@@ -10,6 +19,7 @@
 #include <aws/kinesis/model/GetRecordsRequest.h>
 #include <aws/core/client/RetryStrategy.h>
 #include <aws/core/utils/logging/FormattedLogSystem.h>
+#include <aws/core/client/DefaultRetryStrategy.h>
 
 #include "kinesis_consumer.h"
 #include "conc_queue.hpp"
@@ -38,38 +48,7 @@ struct kinesis_consumer
 	Aws::String shard_iter;
 };
 
-class AltRetryStrategy : public RetryStrategy
-{
-public:
-    AltRetryStrategy(long maxRetries = 5, long scaleFactor = 25) :
-        m_scaleFactor(scaleFactor), m_maxRetries(maxRetries)  
-    {}
-
-	bool ShouldRetry(const AWSError<CoreErrors>& error, long attemptedRetries) const
-	{    
-		if (attemptedRetries >= m_maxRetries)
-			return false;
-
-		return error.ShouldRetry();
-	}
-
-	long CalculateDelayBeforeNextRetry(const AWSError<CoreErrors>& error, long attemptedRetries) const
-	{
-		AWS_UNREFERENCED_PARAM(error);
-
-		if (attemptedRetries == 0)
-		{
-			return 0;
-		}
-
-		return (1 << attemptedRetries) * m_scaleFactor;
-	}
-
-private:
-    long m_scaleFactor;
-    long m_maxRetries;
-};
-
+// Override the default logging system to print to stderr
 class AltLogSystem : public Logging::FormattedLogSystem
 {
   public:
@@ -83,8 +62,19 @@ class AltLogSystem : public Logging::FormattedLogSystem
 	}
 };
 
+static double
+get_time()
+{
+    struct timeval tv;
+    gettimeofday(&tv, 0);
+    return tv.tv_sec + (tv.tv_usec / 1000000.0);
+}
+
 static void consume_thread(kinesis_consumer *kc);
 
+// create the state for the consumer.
+// note - this is a blocking call wrt obtaining the shard iterator.
+// on error this returns NULL.
 kinesis_consumer*
 kinesis_consumer_create()
 {
@@ -94,7 +84,7 @@ kinesis_consumer_create()
 	config.region = Aws::Region::US_WEST_2;
 	config.verifySSL = false;
 	
-	config.retryStrategy = Aws::MakeShared<AltRetryStrategy>("kinesis_consumer");
+	config.retryStrategy = Aws::MakeShared<DefaultRetryStrategy>("kinesis_consumer", 5, 25);
 	auto *kc = new KinesisClient(config);
 
 	GetShardIteratorRequest request;
@@ -117,12 +107,14 @@ kinesis_consumer_create()
 	return new kinesis_consumer{kc, cq, {true}, NULL, shard_iter};
 }
 
+// create and start the consumer thread
 void
 kinesis_consumer_start(kinesis_consumer *kc)
 {
 	kc->thread = new std::thread(consume_thread, kc);
 }
 
+// stop, join, and delete the consumer thread
 void
 kinesis_consumer_stop(kinesis_consumer *kc)
 {
@@ -132,6 +124,7 @@ kinesis_consumer_stop(kinesis_consumer *kc)
 	delete kc->thread;
 }
 
+// clean up consumer resources
 void
 kinesis_consumer_destroy(kinesis_consumer *kc)
 {
@@ -143,14 +136,8 @@ kinesis_consumer_destroy(kinesis_consumer *kc)
 	delete kc;
 }
 
-static double
-get_time()
-{
-    struct timeval tv;
-    gettimeofday(&tv, 0);
-    return tv.tv_sec + (tv.tv_usec / 1000000.0);
-}
-
+// consumer thread continuously loops requesting records until the shard
+// is finished or it is signalled to stop (via kc->keep_running)
 static void
 consume_thread(kinesis_consumer *kc)
 {
@@ -201,6 +188,7 @@ consume_thread(kinesis_consumer *kc)
 	printf("consume thread stopping\n");
 }
 
+// API for external consumer to pop a batch from the queue
 const kinesis_batch*
 kinesis_consume(kinesis_consumer *kc, int timeout)
 {
@@ -209,6 +197,7 @@ kinesis_consume(kinesis_consumer *kc, int timeout)
 	return popped ? (const kinesis_batch*) outcome : NULL;
 }
 
+// C -> C++ API wrappers
 int64_t
 kinesis_batch_get_millis_behind_latest(const kinesis_batch *rb)
 {

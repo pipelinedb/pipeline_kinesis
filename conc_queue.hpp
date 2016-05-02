@@ -1,17 +1,22 @@
+/*-------------------------------------------------------------------------
+ *
+ * conc_queue.hpp
+ *	  Concurrent Bounded Queue
+ *
+ * Copyright (c) 2013-2016, PipelineDB
+ *
+ *-------------------------------------------------------------------------
+ */
+#ifndef CONC_QUEUE_HPP
+#define CONC_QUEUE_HPP
+
 #include <mutex>
 #include <queue>
 
 template<typename Data>
 class concurrent_queue
 {
-private:
-    std::queue<Data> queue_;
-    mutable std::mutex mutex_;
-	std::condition_variable cond_var_has_items;
-	std::condition_variable cond_var_has_space;
-	size_t max_;
-public:
-
+  public:
 	concurrent_queue(size_t max_items)
 		:
 		queue_(),
@@ -28,6 +33,7 @@ public:
         return queue_.empty();
     }
 
+	// push item onto the queue, wait up to ms if q full
 	bool push_with_timeout(Data const& data, int ms)
     {
 		{
@@ -49,6 +55,7 @@ public:
 		return true;
     }
 
+	// pop item onto the queue, wait up to ms for item if q empty
 	bool pop_with_timeout(Data& popped_value, int ms)
     {
 		{
@@ -70,4 +77,13 @@ public:
 		cond_var_has_space.notify_one();
 		return true;
     }
+
+  private:
+    std::queue<Data> queue_;
+    mutable std::mutex mutex_;
+	std::condition_variable cond_var_has_items;
+	std::condition_variable cond_var_has_space;
+	size_t max_;
 };
+
+#endif
