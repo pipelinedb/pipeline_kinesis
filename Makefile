@@ -16,11 +16,16 @@
 #clean:
 #	rm -f *.o pipeline_kinesis
 
-MODULES = pipeline_kinesis
+MODULE_big = pipeline_kinesis
 OBJS = pipeline_kinesis.o kinesis_consumer.o
 
 EXTENSION = pipeline_kinesis
 DATA = pipeline_kinesis--0.9.1.sql
+
+LDFLAGS = -L/usr/local/lib/linux/intel64/$(MODE)
+SHLIB_LINK = -laws-cpp-sdk-core \
+	-laws-cpp-sdk-kinesis \
+	-lpthread
 
 PG_CONFIG = pg_config
 PGXS := $(shell $(PG_CONFIG) --pgxs)

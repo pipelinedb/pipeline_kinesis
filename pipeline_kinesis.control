@@ -1,4 +1,4 @@
-# PipelineDB extension for Kafka support
+# PipelineDB extension for Kinesis support
 comment = 'PipelineDB extension for Kinesis support'
 default_version = '0.9.1'
 module_pathname = '$libdir/pipeline_kinesis'

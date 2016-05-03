@@ -25,23 +25,40 @@ CREATE TABLE pipeline_kinesis_seqnums (
 	seqnum text NOT NULL
 );
 
-CREATE FUNCTION kinesis_consume_begin_tr (
-  endpoint     text,
-  topic        text,
-  relation     text,
-  batchsize    integer DEFAULT 1000,
-  parallelism  integer DEFAULT 1,
-  start_seq text DEFAULT NULL
+CREATE FUNCTION kinesis_add_endpoint (
+  name text,
+  region text,
+  credfile text,
+  url text DEFAULT NULL
 )
 RETURNS text
-AS 'MODULE_PATHNAME', 'kinesis_consume_begin_tr'
+AS 'MODULE_PATHNAME', 'kinesis_add_endpoint'
 LANGUAGE C IMMUTABLE;
 
-CREATE FUNCTION kinesis_consume_end_tr (
-  endpoint   text,
-  topic        text,
-  relation     text
+CREATE FUNCTION kinesis_remove_endpoint (
+  name text
 )
 RETURNS text
-AS 'MODULE_PATHNAME', 'kinesis_consume_etnd_tr'
+AS 'MODULE_PATHNAME', 'kinesis_remove_endpoint'
 LANGUAGE C IMMUTABLE;
+
+--CREATE FUNCTION kinesis_consume_begin_tr (
+--  endpoint     text,
+--  topic        text,
+--  relation     text,
+--  batchsize    integer DEFAULT 1000,
+--  parallelism  integer DEFAULT 1,
+--  start_seq text DEFAULT NULL
+--)
+--RETURNS text
+--AS 'MODULE_PATHNAME', 'kinesis_consume_begin_tr'
+--LANGUAGE C IMMUTABLE;
+--
+--CREATE FUNCTION kinesis_consume_end_tr (
+--  endpoint   text,
+--  topic        text,
+--  relation     text
+--)
+--RETURNS text
+--AS 'MODULE_PATHNAME', 'kinesis_consume_etnd_tr'
+--LANGUAGE C IMMUTABLE;
