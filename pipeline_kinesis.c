@@ -21,11 +21,16 @@
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/rel.h"
+#include "utils/memutils.h"
 #include "utils/snapmgr.h"
 #include "postmaster/bgworker.h"
 #include "miscadmin.h"
 #include "commands/dbcommands.h"
 #include "kinesis_consumer.h"
+#include "pipeline/stream.h"
+#include "catalog/pipeline_stream_fn.h"
+#include "commands/copy.h"
+#include "storage/proc.h"
 
 #include <unistd.h>
 
@@ -200,16 +205,19 @@ create_consumer(Relation consumers, text *endpoint,
 	return oid;
 }
 
+volatile int got_sigterm = 0;
+
 static void
 kinesis_consume_main_sigterm(SIGNAL_ARGS)
 {
-//	int save_errno = errno;
-//
-//	got_sigterm = true;
-//	if (MyProc)
-//		SetLatch(&MyProc->procLatch);
-//
-//	errno = save_errno;
+	int save_errno = errno;
+
+	got_sigterm = true;
+
+	if (MyProc)
+		SetLatch(&MyProc->procLatch);
+
+	errno = save_errno;
 }
 
 extern void kinesis_consume_main(Datum arg);
@@ -226,7 +234,111 @@ get_time()
 
 static void log_fn(void *ctx, const char *s)
 {
-	elog(LOG, "%s", s);
+	// aws log messages have a newline on them
+
+	int n = strlen(s);
+	elog(LOG, "%.*s", n-1, s);
+}
+
+static CopyStmt *
+get_copy_statement(RangeVar *rv)
+{
+	MemoryContext old = MemoryContextSwitchTo(CacheMemoryContext);
+	CopyStmt *stmt = makeNode(CopyStmt);
+	Relation rel;
+	TupleDesc desc;
+	DefElem *format = makeNode(DefElem);
+	int i;
+
+	stmt->relation = rv;
+	stmt->filename = NULL;
+	stmt->options = NIL;
+	stmt->is_from = true;
+	stmt->query = NULL;
+	stmt->attlist = NIL;
+
+	rel = heap_openrv(rv, AccessShareLock);
+	desc = RelationGetDescr(rel);
+
+	for (i = 0; i < desc->natts; i++)
+	{
+		/*
+		 * Users can't supply values for arrival_timestamp, so make
+		 * sure we exclude it from the copy attr list
+		 */
+		char *name = NameStr(desc->attrs[i]->attname);
+		if (IsStream(RelationGetRelid(rel)) && pg_strcasecmp(name,
+					ARRIVAL_TIMESTAMP) == 0)
+			continue;
+		stmt->attlist = lappend(stmt->attlist, makeString(name));
+	}
+
+//	if (consumer->delimiter)
+//	{
+//		DefElem *delim = makeNode(DefElem);
+//		delim->defname = OPTION_DELIMITER;
+//		delim->arg = (Node *) makeString(consumer->delimiter);
+//		stmt->options = lappend(stmt->options, delim);
+//	}
+//
+//	format->defname = OPTION_FORMAT;
+//	format->arg = (Node *) makeString(consumer->format);
+//	stmt->options = lappend(stmt->options, format);
+//
+//	if (consumer->quote)
+//	{
+//		DefElem *quote = makeNode(DefElem);
+//		quote->defname = OPTION_QUOTE;
+//		quote->arg = (Node *) makeString(consumer->quote);
+//		stmt->options = lappend(stmt->options, quote);
+//	}
+//
+//	if (consumer->escape)
+//	{
+//		DefElem *escape = makeNode(DefElem);
+//		escape->defname = OPTION_ESCAPE;
+//		escape->arg = (Node *) makeString(consumer->escape);
+//		stmt->options = lappend(stmt->options, escape);
+//	}
+
+	heap_close(rel, NoLock);
+	MemoryContextSwitchTo(old);
+
+	return stmt;
+}
+
+static int
+copy_next(void *args, void *buf, int minread, int maxread)
+{
+	StringInfo messages = (StringInfo) args;
+	int remaining = messages->len - messages->cursor;
+	int read = 0;
+
+	if (maxread <= remaining)
+		read = maxread;
+	else
+		read = remaining;
+
+	if (read == 0)
+		return 0;
+
+	memcpy(buf, messages->data + messages->cursor, read);
+	messages->cursor += read;
+
+	return read;
+}
+
+static uint64
+execute_copy(CopyStmt *stmt, StringInfo buf)
+{
+	uint64 processed;
+
+	copy_iter_hook = copy_next;
+	copy_iter_arg = buf;
+
+	DoCopy(stmt, "COPY", &processed);
+
+	return processed;
 }
 
 void kinesis_consume_main(Datum arg)
@@ -234,6 +346,7 @@ void kinesis_consume_main(Datum arg)
 	int i;
 	Oid dbid;
 	char *dbname;
+	CopyStmt *copy;
 	pqsignal(SIGTERM, kinesis_consume_main_sigterm);
 #define BACKTRACE_SEGFAULTS
 #ifdef BACKTRACE_SEGFAULTS
@@ -246,16 +359,24 @@ void kinesis_consume_main(Datum arg)
 	dbid = DatumGetObjectId(arg);
 	elog(LOG, "start consumer on db %d", dbid);
 
-//	dbname = get_database_name(dbid);
-//	elog(LOG, "dbname %s", dbname);
-
 	BackgroundWorkerInitializeConnectionByOid(dbid, 0);
+	text *rel_text = cstring_to_text("foo");
+
+	RangeVar *relname =
+		makeRangeVarFromNameList(textToQualifiedNameList(rel_text));
+
+	StartTransactionCommand();
+	copy = get_copy_statement(relname);
+	CommitTransactionCommand();
 
 	kinesis_set_logger(NULL, log_fn);
 	kinesis_consumer *kc = kinesis_consumer_create("test", "0");
 	kinesis_consumer_start(kc);
 
-	while (true)
+	StringInfo info = makeStringInfo();
+	int ctr = 0;
+
+	while (!got_sigterm)
 	{
 		const kinesis_batch *batch = kinesis_consume(kc, 1000);
 
@@ -264,6 +385,8 @@ void kinesis_consume_main(Datum arg)
 			elog(LOG, "main timeout");
 			continue;
 		}
+
+		resetStringInfo(info);
 
 		elog(LOG, "%3.6f consumer got %d behind %ld", get_time(),
 				kinesis_batch_get_size(batch),
@@ -281,11 +404,18 @@ void kinesis_consume_main(Datum arg)
 			const uint8_t *d = kinesis_record_get_data(r);
 			const char *seq = kinesis_record_get_sequence_number(r);
 
-			elog(LOG, "%f rec pkey %s data %.*s seq %s\n", t, pk, n, d, seq);
+			appendBinaryStringInfo(info, (const char*) d, n);
+			appendStringInfoChar(info, '\n');
 		}
 
 		kinesis_batch_destroy(batch);
+
+		StartTransactionCommand();
+		execute_copy(copy, info);
+		CommitTransactionCommand();
 	}
+
+	kinesis_consumer_destroy(kc);
 }
 
 static bool
@@ -354,7 +484,6 @@ kinesis_consume_begin_sr(PG_FUNCTION_ARGS)
 	endpoint = PG_GETARG_TEXT_P(0);
 	stream = PG_GETARG_TEXT_P(1);
 	relation = PG_GETARG_TEXT_P(2);
-
 
 	if (PG_ARGISNULL(3))
 		batchsize = 1000;
