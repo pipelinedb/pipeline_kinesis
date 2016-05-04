@@ -14,7 +14,7 @@ CREATE TABLE pipeline_kinesis_endpoints (
 CREATE TABLE pipeline_kinesis_consumers (
   endpoint    text    NOT NULL,
   relation    text    NOT NULL,
-  shard       text    NOT NULL,
+  stream 	  text    NOT NULL,
   batchsize   integer NOT NULL,
   parallelism integer NOT NULL
 ) WITH OIDS;
@@ -42,23 +42,23 @@ RETURNS text
 AS 'MODULE_PATHNAME', 'kinesis_remove_endpoint'
 LANGUAGE C IMMUTABLE;
 
---CREATE FUNCTION kinesis_consume_begin_tr (
---  endpoint     text,
---  topic        text,
---  relation     text,
---  batchsize    integer DEFAULT 1000,
---  parallelism  integer DEFAULT 1,
---  start_seq text DEFAULT NULL
---)
---RETURNS text
---AS 'MODULE_PATHNAME', 'kinesis_consume_begin_tr'
---LANGUAGE C IMMUTABLE;
---
---CREATE FUNCTION kinesis_consume_end_tr (
+CREATE FUNCTION kinesis_consume_begin_sr (
+  endpoint     text,
+  stream 	   text,
+  relation     text,
+  batchsize    integer DEFAULT 1000,
+  parallelism  integer DEFAULT 1,
+  start_seq text DEFAULT NULL
+)
+RETURNS text
+AS 'MODULE_PATHNAME', 'kinesis_consume_begin_sr'
+LANGUAGE C IMMUTABLE;
+
+--CREATE FUNCTION kinesis_consume_end_sr (
 --  endpoint   text,
---  topic        text,
+--  stream 	text,
 --  relation     text
 --)
 --RETURNS text
---AS 'MODULE_PATHNAME', 'kinesis_consume_etnd_tr'
+--AS 'MODULE_PATHNAME', 'kinesis_consume_end_sr'
 --LANGUAGE C IMMUTABLE;

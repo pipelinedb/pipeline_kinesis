@@ -32,6 +32,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <sys/time.h>
+#include <aws/core/utils/logging/LogMacros.h>
 
 using namespace Aws::Auth;
 using namespace Aws::Client;
@@ -81,8 +82,10 @@ kinesis_set_logger(void *ctx, void (*l) (void *ctx, const char *s))
 	logger_ctx = ctx;
 	logger_fn = l;
 
-	Aws::Utils::Logging::InitializeAWSLogging(Aws::MakeShared<AltLogSystem>("logging", Aws::Utils::Logging::LogLevel::Error));
+	Aws::Utils::Logging::InitializeAWSLogging(Aws::MakeShared<AltLogSystem>("logging", Aws::Utils::Logging::LogLevel::Info));
 }
+
+// AWS_LOG_INFO
 
 // create the state for the consumer.
 // note - this is a blocking call wrt obtaining the shard iterator.
@@ -103,7 +106,9 @@ kinesis_consumer_create(const char *stream, const char *shard)
 	request.SetShardId(shard);
 	request.SetShardIteratorType(ShardIteratorType::TRIM_HORIZON);
 
-	printf("shard id %s\n", shard);
+	fprintf(stderr, "shard id %s\n", shard);
+//	AWS_LOG_INFO("consumer", "shard id %s", shard);
+//	printf("shard id %s\n", shard);
 
 	request.SetStreamName("test");
 	request.SetShardId("shardId-000000000000");
@@ -118,6 +123,7 @@ kinesis_consumer_create(const char *stream, const char *shard)
 	}
 
 	Aws::String shard_iter = outcome.GetResult().GetShardIterator();
+	AWS_LOG_INFO("derp", "shard iter %s", shard_iter.c_str()); 
 
 	auto *cq = new concurrent_queue<GetRecordsOutcome*>(100);
 	return new kinesis_consumer{kc, cq, {true}, NULL, shard_iter};
@@ -180,6 +186,9 @@ consume_thread(kinesis_consumer *kc)
 		if (new_rec_out->IsSuccess())
 		{
 			kc->shard_iter = new_rec_out->GetResult().GetNextShardIterator();
+
+			AWS_LOG_INFO("derp", "shard iter %s", kc->shard_iter.c_str()); 
+
 			bool pushed = false;
 
 			int num_rec = kinesis_batch_get_size((kinesis_batch*) new_rec_out);
