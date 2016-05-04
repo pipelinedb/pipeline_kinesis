@@ -102,17 +102,28 @@ kinesis_consumer_create(const char *stream, const char *shard)
 
 	GetShardIteratorRequest request;
 
+	// types
+	//
+	// at_seq
+	// after_seq
+	// trim_horizon
+	// latest
+	// timestamp
+	//
+	// default is to read from end of stream
+
 	request.SetStreamName(stream);
 	request.SetShardId(shard);
 	request.SetShardIteratorType(ShardIteratorType::TRIM_HORIZON);
+//	request.SetStartingSequenceNumber("49561655339045264437426724657642549718145953073006116866");
 
-	fprintf(stderr, "shard id %s\n", shard);
+//	fprintf(stderr, "shard id %s\n", shard);
 //	AWS_LOG_INFO("consumer", "shard id %s", shard);
 //	printf("shard id %s\n", shard);
 
-	request.SetStreamName("test");
-	request.SetShardId("shardId-000000000000");
-	request.SetShardIteratorType(ShardIteratorType::TRIM_HORIZON);
+//	request.SetStreamName("test");
+//	request.SetShardId("shardId-000000000000");
+//	request.SetShardIteratorType(ShardIteratorType::TRIM_HORIZON);
 
 	auto outcome = kc->GetShardIterator(request);
 

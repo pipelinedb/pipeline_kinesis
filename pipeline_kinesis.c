@@ -341,12 +341,62 @@ execute_copy(CopyStmt *stmt, StringInfo buf)
 	return processed;
 }
 
+static void
+save_consumer_state(Relation seqnums, StringInfo seq)
+{
+	// write the sequence number to the pipeline_kinesis_seqnums table
+
+	HeapTuple tup;
+	Datum values[3];
+	bool nulls[3];
+
+	ScanKeyData skey[2];
+	HeapScanDesc scan;
+
+	MemSet(nulls, false, sizeof(nulls));
+
+	ScanKeyInit(&skey[0], 1, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(0));
+	ScanKeyInit(&skey[1], 2, BTEqualStrategyNumber, F_INT4EQ, Int32GetDatum(0));
+
+	scan = heap_beginscan(seqnums, GetTransactionSnapshot(), 2, skey);
+	tup = heap_getnext(scan, ForwardScanDirection);
+
+	values[2] = CStringGetTextDatum(seq->data);
+
+	if (HeapTupleIsValid(tup))
+	{
+		/* seq already exists, update it */
+		bool replace[3];
+		MemSet(replace, true, sizeof(nulls));
+
+		replace[0] = false;
+		replace[1] = false;
+
+		tup = heap_modify_tuple(tup, RelationGetDescr(seqnums),
+				values, nulls, replace);
+		simple_heap_update(seqnums, &tup->t_self, tup);
+	}
+	else
+	{
+		/* consumer doesn't exist yet, create it with the given parameters */
+		values[0] = ObjectIdGetDatum(0);
+		values[1] = Int32GetDatum(0);
+
+		tup = heap_form_tuple(RelationGetDescr(seqnums), values, nulls);
+		simple_heap_insert(seqnums, tup);
+	}
+
+	heap_endscan(scan);
+	CommandCounterIncrement();
+}
+
 void kinesis_consume_main(Datum arg)
 {
 	int i;
 	Oid dbid;
 	char *dbname;
 	CopyStmt *copy;
+
 	pqsignal(SIGTERM, kinesis_consume_main_sigterm);
 #define BACKTRACE_SEGFAULTS
 #ifdef BACKTRACE_SEGFAULTS
@@ -357,7 +407,8 @@ void kinesis_consume_main(Datum arg)
 	BackgroundWorkerUnblockSignals();
 
 	dbid = DatumGetObjectId(arg);
-	elog(LOG, "start consumer on db %d", dbid);
+
+	// need to load the consumer state from the db.
 
 	BackgroundWorkerInitializeConnectionByOid(dbid, 0);
 	text *rel_text = cstring_to_text("foo");
@@ -374,6 +425,8 @@ void kinesis_consume_main(Datum arg)
 	kinesis_consumer_start(kc);
 
 	StringInfo info = makeStringInfo();
+	StringInfo last_seq = makeStringInfo();
+
 	int ctr = 0;
 
 	while (!got_sigterm)
@@ -404,14 +457,29 @@ void kinesis_consume_main(Datum arg)
 			const uint8_t *d = kinesis_record_get_data(r);
 			const char *seq = kinesis_record_get_sequence_number(r);
 
+			elog(LOG, "seq %s rec %.*s", seq, n, d);
+
 			appendBinaryStringInfo(info, (const char*) d, n);
 			appendStringInfoChar(info, '\n');
+
+			resetStringInfo(last_seq);
+			appendStringInfoString(last_seq, seq);
 		}
 
 		kinesis_batch_destroy(batch);
 
+		if (!size)
+			continue;
+
 		StartTransactionCommand();
 		execute_copy(copy, info);
+
+		Relation seqrel = heap_openrv(makeRangeVar(NULL, "pipeline_kinesis_seqnums", -1), RowExclusiveLock);
+
+		save_consumer_state(seqrel, last_seq);
+
+		heap_close(seqrel, NoLock);
+
 		CommitTransactionCommand();
 	}
 
