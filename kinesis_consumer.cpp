@@ -33,6 +33,7 @@
 #include <unistd.h>
 #include <sys/time.h>
 #include <aws/core/utils/logging/LogMacros.h>
+#include <aws/kinesis/model/DescribeStreamRequest.h>
 
 using namespace Aws::Auth;
 using namespace Aws::Client;
@@ -85,21 +86,84 @@ kinesis_set_logger(void *ctx, void (*l) (void *ctx, const char *s))
 	Aws::Utils::Logging::InitializeAWSLogging(Aws::MakeShared<AltLogSystem>("logging", Aws::Utils::Logging::LogLevel::Info));
 }
 
-// AWS_LOG_INFO
+kinesis_client * 
+kinesis_client_create(const char *region,
+					  const char *credfile,
+					  const char *url)
+{
+	ClientConfiguration config;
+
+	// XXX - unhardcode
+	config.region = Aws::Region::US_WEST_2;
+	config.retryStrategy = Aws::MakeShared<DefaultRetryStrategy>("kinesis_consumer", 5, 25);
+	KinesisClient *kc = new KinesisClient(config);
+
+	return (kinesis_client*)(kc);
+}
+
+kinesis_stream_metadata*
+kinesis_client_create_stream_metadata(kinesis_client *client, 
+		const char *stream)
+{
+	KinesisClient *kc = (KinesisClient*)(client);
+
+	DescribeStreamRequest request;
+	request.SetStreamName(stream);
+
+	DescribeStreamOutcome *out = new DescribeStreamOutcome();
+	*out = kc->DescribeStream(request);
+
+	if (!out->IsSuccess())
+	{
+		delete out;
+		return NULL;
+	}
+
+	return (kinesis_stream_metadata*) out;
+}
+
+int 
+kinesis_stream_metadata_get_num_shards(kinesis_stream_metadata *meta)
+{
+	DescribeStreamOutcome *out = (DescribeStreamOutcome*)(meta);
+	return out->GetResult().GetStreamDescription().GetShards().size();
+}
+
+const kinesis_shard_metadata *
+kinesis_stream_metadata_get_shard(kinesis_stream_metadata *meta, int i)
+{
+	DescribeStreamOutcome *out = (DescribeStreamOutcome*)(meta);
+	return (const kinesis_shard_metadata*) 
+		&out->GetResult().GetStreamDescription().GetShards()[i];
+}
+
+const char * 
+kinesis_shard_metadata_get_id(const kinesis_shard_metadata *meta)
+{
+	Shard *shard = (Shard*)(meta);
+
+	return shard->GetShardId().c_str();
+}
+
+void
+kinesis_client_destroy_stream_metadata(kinesis_stream_metadata *meta)
+{
+	delete (DescribeStreamOutcome*)(meta);
+}
+
+void
+kinesis_client_destroy(kinesis_client *client)
+{
+	delete (KinesisClient *)(client);
+}
 
 // create the state for the consumer.
 // note - this is a blocking call wrt obtaining the shard iterator.
 // on error this returns NULL.
 kinesis_consumer*
-kinesis_consumer_create(const char *stream, const char *shard)
+kinesis_consumer_create(kinesis_client *k, const char *stream, const char *shard)
 {
-	ClientConfiguration config;
-	config.region = Aws::Region::US_WEST_2;
-	config.verifySSL = false;
-	
-	config.retryStrategy = Aws::MakeShared<DefaultRetryStrategy>("kinesis_consumer", 5, 25);
-	auto *kc = new KinesisClient(config);
-
+	KinesisClient *kc = (KinesisClient*)(k);
 	GetShardIteratorRequest request;
 
 	// types
@@ -115,12 +179,11 @@ kinesis_consumer_create(const char *stream, const char *shard)
 	request.SetStreamName(stream);
 	request.SetShardId(shard);
 	request.SetShardIteratorType(ShardIteratorType::TRIM_HORIZON);
-//	request.SetStartingSequenceNumber("49561655339045264437426724657642549718145953073006116866");
 
+//	request.SetStartingSequenceNumber("49561655339045264437426724657642549718145953073006116866");
 //	fprintf(stderr, "shard id %s\n", shard);
 //	AWS_LOG_INFO("consumer", "shard id %s", shard);
 //	printf("shard id %s\n", shard);
-
 //	request.SetStreamName("test");
 //	request.SetShardId("shardId-000000000000");
 //	request.SetShardIteratorType(ShardIteratorType::TRIM_HORIZON);
@@ -129,7 +192,6 @@ kinesis_consumer_create(const char *stream, const char *shard)
 
 	if (!outcome.IsSuccess())
 	{
-		delete kc;
 		return NULL;
 	}
 
