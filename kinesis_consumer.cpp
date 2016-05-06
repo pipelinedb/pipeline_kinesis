@@ -161,32 +161,26 @@ kinesis_client_destroy(kinesis_client *client)
 // note - this is a blocking call wrt obtaining the shard iterator.
 // on error this returns NULL.
 kinesis_consumer*
-kinesis_consumer_create(kinesis_client *k, const char *stream, const char *shard)
+kinesis_consumer_create(kinesis_client *k, 
+		const char *stream, 
+		const char *shard,
+		const char *seqnum)
 {
 	KinesisClient *kc = (KinesisClient*)(k);
 	GetShardIteratorRequest request;
 
-	// types
-	//
-	// at_seq
-	// after_seq
-	// trim_horizon
-	// latest
-	// timestamp
-	//
-	// default is to read from end of stream
-
 	request.SetStreamName(stream);
 	request.SetShardId(shard);
-	request.SetShardIteratorType(ShardIteratorType::TRIM_HORIZON);
 
-//	request.SetStartingSequenceNumber("49561655339045264437426724657642549718145953073006116866");
-//	fprintf(stderr, "shard id %s\n", shard);
-//	AWS_LOG_INFO("consumer", "shard id %s", shard);
-//	printf("shard id %s\n", shard);
-//	request.SetStreamName("test");
-//	request.SetShardId("shardId-000000000000");
-//	request.SetShardIteratorType(ShardIteratorType::TRIM_HORIZON);
+	if (strlen(seqnum) == 0)
+	{
+		request.SetShardIteratorType(ShardIteratorType::TRIM_HORIZON);
+	}
+	else
+	{
+		request.SetShardIteratorType(ShardIteratorType::AFTER_SEQUENCE_NUMBER);
+		request.SetStartingSequenceNumber(seqnum);
+	}
 
 	auto outcome = kc->GetShardIterator(request);
 
@@ -254,14 +248,13 @@ consume_thread(kinesis_consumer *kc)
 
 		double now = get_time();
 
-		printf("%3.6f request time %3.6f\n", now, now - last_request_time);
+//		printf("%3.6f request time %3.6f\n", now, now - last_request_time);
 
 		if (new_rec_out->IsSuccess())
 		{
 			kc->shard_iter = new_rec_out->GetResult().GetNextShardIterator();
 
 			AWS_LOG_INFO("derp", "shard iter %s", kc->shard_iter.c_str()); 
-
 			bool pushed = false;
 
 			int num_rec = kinesis_batch_get_size((kinesis_batch*) new_rec_out);
@@ -270,13 +263,13 @@ consume_thread(kinesis_consumer *kc)
 			{
 				pushed = kc->queue->push_with_timeout(new_rec_out, 1000);
 
-				if (pushed)
-					printf("%3.6f producer pushed %d\n", get_time(), num_rec);
+//				if (pushed)
+//					printf("%3.6f producer pushed %d\n", get_time(), num_rec);
 			}
 		}
 		else
 		{
-			printf("unsuccessful request\n");
+//			printf("unsuccessful request\n");
 		}
 
 		// Throttling logic
@@ -292,7 +285,7 @@ consume_thread(kinesis_consumer *kc)
 		}
 	}
 
-	printf("consume thread stopping\n");
+//	printf("consume thread stopping\n");
 }
 
 // API for external consumer to pop a batch from the queue

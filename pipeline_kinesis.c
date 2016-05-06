@@ -32,6 +32,10 @@
 #include "commands/copy.h"
 #include "storage/proc.h"
 
+#include <sys/time.h>
+#include "catalog/pg_type.h"
+#include "executor/spi.h"
+
 #include <unistd.h>
 
 #define RETURN_SUCCESS() PG_RETURN_DATUM(CStringGetTextDatum("success"))
@@ -50,6 +54,13 @@ typedef struct KinesisConsumerInfo
 
 } KinesisConsumerInfo;
 
+typedef struct ShardState
+{
+	const char *id;
+	StringInfo seqnum;
+	kinesis_consumer *kc;
+} ShardState;
+
 typedef struct KinesisConsumerState
 {
 	Oid id;
@@ -62,7 +73,9 @@ typedef struct KinesisConsumerState
 	char *kinesis_stream;
 
 	int batchsize;
-	char **seq_nums;
+	int num_shards;
+
+	ShardState *shards;
 
 } KinesisConsumerState;
 
@@ -79,15 +92,6 @@ _PG_init(void)
 
 	consumer_info = ShmemInitHash("KinsesisConsumerInfo", 4, 64,
 			&ctl, HASH_ELEM | HASH_FUNCTION);
-
-//	MemSet(&ctl, 0, sizeof(HASHCTL));
-//
-//	ctl.keysize = sizeof(Oid);
-//	ctl.entrysize = sizeof(KafkaConsumerGroup);
-//	ctl.hash = oid_hash;
-//
-//	consumer_groups = ShmemInitHash("KafkaConsumerGroups", 2 * NUM_CONSUMERS_INIT,
-//			2 * NUM_CONSUMERS_MAX, &ctl, HASH_ELEM | HASH_FUNCTION);
 }
 
 void
@@ -102,56 +106,30 @@ PG_FUNCTION_INFO_V1(kinesis_add_endpoint);
 Datum
 kinesis_add_endpoint(PG_FUNCTION_ARGS)
 {
-	HeapTuple tup;
+	char *query = "INSERT INTO pipeline_kinesis_endpoints VALUES ($1, $2, $3, $4)";
+    Oid argtypes[4] = { TEXTOID, TEXTOID, TEXTOID, TEXTOID };
+
 	Datum values[4];
-	bool nulls[4];
-	text *name;
-	text *region;
-	text *credfile;
-	text *url;
-	ScanKeyData skey[1];
-	HeapScanDesc scan;
-	Relation endpoints;
+    char nulls[4];
 
-	name = PG_GETARG_TEXT_P(0);
-	region = PG_GETARG_TEXT_P(1);
-	credfile = PG_GETARG_TEXT_P(2);
-	url = PG_ARGISNULL(3) ? NULL : PG_GETARG_TEXT_P(3);
+	MemSet(nulls, 0, sizeof(nulls));
 
-	endpoints = heap_openrv(makeRangeVar(NULL,
-				"pipeline_kinesis_endpoints", -1),
-			AccessExclusiveLock);
+	values[0] = PG_GETARG_DATUM(0);
+	values[1] = PG_GETARG_DATUM(1);
+	values[2] = PG_GETARG_DATUM(2);
 
-	/* don't allow duplicate endpoints */
-	ScanKeyInit(&skey[0], 1, BTEqualStrategyNumber, F_TEXTEQ,
-			PointerGetDatum(name));
-	scan = heap_beginscan(endpoints, GetTransactionSnapshot(), 1, skey);
-	tup = heap_getnext(scan, ForwardScanDirection);
-
-	if (HeapTupleIsValid(tup))
-	{
-		heap_endscan(scan);
-		heap_close(endpoints, NoLock);
-
-		elog(ERROR, "endpoint %s already exists", TextDatumGetCString(name));
-	}
-
-	values[0] = PointerGetDatum(name);
-	values[1] = PointerGetDatum(region);
-	values[2] = PointerGetDatum(credfile);
-
-	MemSet(nulls, false, sizeof(nulls));
-
-	if (url == NULL)
-		nulls[3] = true;
+	if (PG_ARGISNULL(3))
+		nulls[3] = 'n';
 	else
-		values[3] = PointerGetDatum(url);
+		values[3] = PG_GETARG_DATUM(3);
 
-	tup = heap_form_tuple(RelationGetDescr(endpoints), values, nulls);
-	simple_heap_insert(endpoints, tup);
+	SPI_connect();
 
-	heap_endscan(scan);
-	heap_close(endpoints, NoLock);
+    if (SPI_execute_with_args(query, 4, argtypes,
+				values, nulls, false, 1) != SPI_OK_INSERT)
+		elog(ERROR, "could not add endpoint");
+
+	SPI_finish();
 
 	RETURN_SUCCESS();
 }
@@ -160,93 +138,28 @@ PG_FUNCTION_INFO_V1(kinesis_remove_endpoint);
 Datum
 kinesis_remove_endpoint(PG_FUNCTION_ARGS)
 {
-	HeapTuple tup;
-	Relation endpoints;
-	text *host;
-	ScanKeyData skey[1];
-	HeapScanDesc scan;
+	char *query = "DELETE FROM pipeline_kinesis_endpoints WHERE name = $1;";
+    Oid argtypes[1] = { TEXTOID };
+
+	Datum values[1];
+    char nulls[1];
+
+	MemSet(nulls, 0, sizeof(nulls));
 
 	if (PG_ARGISNULL(0))
 		elog(ERROR, "endpoint cannot be null");
 
-	host = PG_GETARG_TEXT_P(0);
+	values[0] = PG_GETARG_DATUM(0);
 
-	endpoints = heap_openrv(makeRangeVar(NULL,
-				"pipeline_kinesis_endpoints", -1), AccessExclusiveLock);
+	SPI_connect();
 
-	/* don't allow duplicate endpoints */
-	ScanKeyInit(&skey[0], 1, BTEqualStrategyNumber,
-			F_TEXTEQ, PointerGetDatum(host));
-	scan = heap_beginscan(endpoints, GetTransactionSnapshot(), 1, skey);
-	tup = heap_getnext(scan, ForwardScanDirection);
+    if (SPI_execute_with_args(query, 1, argtypes,
+				values, nulls, false, 1) != SPI_OK_DELETE)
+		elog(ERROR, "could not remove endpoint");
 
-	if (!HeapTupleIsValid(tup))
-		elog(ERROR, "endpoint %s does not exist", TextDatumGetCString(host));
-
-	simple_heap_delete(endpoints, &tup->t_self);
-
-	heap_endscan(scan);
-	heap_close(endpoints, NoLock);
+	SPI_finish();
 
 	RETURN_SUCCESS();
-}
-
-static Oid
-create_consumer(Relation consumers, text *endpoint,
-		text *relation, text *stream,
-		int batchsize, int parallelism)
-{
-	HeapTuple tup;
-	Datum values[5];
-	bool nulls[5];
-	Oid oid;
-	ScanKeyData skey[3];
-	HeapScanDesc scan;
-
-	// insert or update into pipeline_kinesis_consumers
-
-	MemSet(nulls, false, sizeof(nulls));
-
-	ScanKeyInit(&skey[0], 1, BTEqualStrategyNumber, F_TEXTEQ, PointerGetDatum(endpoint));
-	ScanKeyInit(&skey[1], 2, BTEqualStrategyNumber, F_TEXTEQ, PointerGetDatum(relation));
-	ScanKeyInit(&skey[2], 3, BTEqualStrategyNumber, F_TEXTEQ, PointerGetDatum(stream));
-
-	scan = heap_beginscan(consumers, GetTransactionSnapshot(), 3, skey);
-	tup = heap_getnext(scan, ForwardScanDirection);
-
-	values[3] = Int32GetDatum(batchsize);
-	values[4] = Int32GetDatum(parallelism);
-
-	if (HeapTupleIsValid(tup))
-	{
-		/* consumer already exists, so just update it with the given parameters */
-		bool replace[5];
-		MemSet(replace, true, sizeof(nulls));
-
-		replace[0] = false;
-		replace[1] = false;
-		replace[2] = false;
-
-		tup = heap_modify_tuple(tup, RelationGetDescr(consumers), values, nulls, replace);
-		simple_heap_update(consumers, &tup->t_self, tup);
-
-		oid = HeapTupleGetOid(tup);
-	}
-	else
-	{
-		/* consumer doesn't exist yet, create it with the given parameters */
-		values[0] = PointerGetDatum(endpoint);
-		values[1] = PointerGetDatum(relation);
-		values[2] = PointerGetDatum(stream);
-
-		tup = heap_form_tuple(RelationGetDescr(consumers), values, nulls);
-		oid = simple_heap_insert(consumers, tup);
-	}
-
-	heap_endscan(scan);
-	CommandCounterIncrement();
-
-	return oid;
 }
 
 volatile int got_sigterm = 0;
@@ -266,7 +179,6 @@ kinesis_consume_main_sigterm(SIGNAL_ARGS)
 
 extern void kinesis_consume_main(Datum arg);
 
-#include <sys/time.h>
 
 static double
 get_time()
@@ -285,7 +197,7 @@ static void log_fn(void *ctx, const char *s)
 }
 
 static CopyStmt *
-get_copy_statement(RangeVar *rv)
+get_copy_statement(const char *relname)
 {
 	MemoryContext old = MemoryContextSwitchTo(CacheMemoryContext);
 	CopyStmt *stmt = makeNode(CopyStmt);
@@ -293,6 +205,8 @@ get_copy_statement(RangeVar *rv)
 	TupleDesc desc;
 	DefElem *format = makeNode(DefElem);
 	int i;
+
+	RangeVar *rv = makeRangeVar(NULL, (char*) relname, -1);
 
 	stmt->relation = rv;
 	stmt->filename = NULL;
@@ -386,159 +300,193 @@ execute_copy(CopyStmt *stmt, StringInfo buf)
 }
 
 static void
-save_consumer_state(Relation seqnums, StringInfo seq)
+load_consumer_state(KinesisConsumerState *state, Oid oid)
 {
-	// write the sequence number to the pipeline_kinesis_seqnums table
+	const char *query = "select e.*, c.* from pipeline_kinesis_consumers c inner join pipeline_kinesis_endpoints e on c.endpoint = e.name where c.oid = $1;";
 
-	HeapTuple tup;
-	Datum values[3];
-	bool nulls[3];
+    Oid argtypes[1] = { OIDOID };
+	Datum values[1];
+    char nulls[1];
 
-	ScanKeyData skey[2];
-	HeapScanDesc scan;
+	MemSet(state, 0, sizeof(KinesisConsumerState));
 
-	MemSet(nulls, false, sizeof(nulls));
+	MemSet(nulls, 0, sizeof(nulls));
+	values[0] = ObjectIdGetDatum(oid);
 
-	ScanKeyInit(&skey[0], 1, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(0));
-	ScanKeyInit(&skey[1], 2, BTEqualStrategyNumber, F_INT4EQ, Int32GetDatum(0));
+	SPI_connect();
 
-	scan = heap_beginscan(seqnums, GetTransactionSnapshot(), 2, skey);
-	tup = heap_getnext(scan, ForwardScanDirection);
+	int rv = SPI_execute_with_args(query, 1, argtypes, values, nulls, false, 1);
 
-	values[2] = CStringGetTextDatum(seq->data);
+	if (rv != SPI_OK_SELECT)
+		elog(ERROR, "could not load consumer state %d", oid);
 
-	if (HeapTupleIsValid(tup))
+	TupleTableSlot *slot = MakeSingleTupleTableSlot(SPI_tuptable->tupdesc);
+	ExecStoreTuple(SPI_tuptable->vals[0], slot, InvalidBuffer, false);
+
+	print_slot(slot);
+
 	{
-		/* seq already exists, update it */
-		bool replace[3];
-		MemSet(replace, true, sizeof(nulls));
+		bool isnull = false;
+		MemoryContext old = MemoryContextSwitchTo(CacheMemoryContext);
 
-		replace[0] = false;
-		replace[1] = false;
+		state->id = oid;
+		state->endpoint_name =
+			TextDatumGetCString(slot_getattr(slot, 1, &isnull));
+		state->endpoint_region =
+			TextDatumGetCString(slot_getattr(slot, 2, &isnull));
+		state->endpoint_credfile =
+			TextDatumGetCString(slot_getattr(slot, 3, &isnull));
 
-		tup = heap_modify_tuple(tup, RelationGetDescr(seqnums),
-				values, nulls, replace);
-		simple_heap_update(seqnums, &tup->t_self, tup);
+		Datum url = slot_getattr(slot, 5, &isnull);
+
+		if (!isnull)
+		{
+			state->endpoint_credfile =
+				TextDatumGetCString(url);
+		}
+
+		state->kinesis_stream =
+			TextDatumGetCString(slot_getattr(slot, 6, &isnull));
+
+		state->relation =
+			TextDatumGetCString(slot_getattr(slot, 7, &isnull));
+
+		state->batchsize = DatumGetInt32(slot_getattr(slot, 8, &isnull));
+
+		MemoryContextSwitchTo(old);
 	}
-	else
+
+	SPI_finish();
+}
+
+static int
+find_shard_id(kinesis_stream_metadata *meta, const char *id)
+{
+	int i = 0;
+	int num_shards = kinesis_stream_metadata_get_num_shards(meta);
+
+	for (i = 0; i < num_shards; ++i)
 	{
-		/* consumer doesn't exist yet, create it with the given parameters */
-		values[0] = ObjectIdGetDatum(0);
-		values[1] = Int32GetDatum(0);
+		const kinesis_shard_metadata *smeta =
+			kinesis_stream_metadata_get_shard(meta, i);
+		const char *sid = kinesis_shard_metadata_get_id(smeta);
 
-		tup = heap_form_tuple(RelationGetDescr(seqnums), values, nulls);
-		simple_heap_insert(seqnums, tup);
+		if (strcmp(sid, id) == 0)
+			return i;
 	}
 
-	heap_endscan(scan);
-	CommandCounterIncrement();
+	return -1;
 }
 
 static void
-load_consumer_state(Oid oid, KinesisConsumerState *state)
+query_meta(KinesisConsumerState *state, kinesis_stream_metadata *meta)
 {
-	// dig all relevant data out of endpoints and consumers
-	// seqnums will have to be derived from metadata.
+	// select * from pipeline_kinesis_seqnums where consumer_id = derp.
+	// create place to stash the sequence numbers (from num_shards)
+	// then they have to match up with our shard ids
 
-	Relation endpoints;
-	Relation consumers;
-	bool isnull;
+	int num_shards = kinesis_stream_metadata_get_num_shards(meta);
+	int i = 0;
 
-	endpoints = heap_openrv(makeRangeVar(NULL,
-				"pipeline_kinesis_endpoints", -1), AccessExclusiveLock);
+	MemoryContext old = MemoryContextSwitchTo(CacheMemoryContext);
+	state->num_shards = num_shards;
+	state->shards = palloc0(num_shards * sizeof(ShardState));
 
-	consumers = heap_openrv(makeRangeVar(NULL,
-				"pipeline_kinesis_consumers", -1), AccessShareLock);
-
+	for (i = 0; i < num_shards; ++i)
 	{
-		HeapScanDesc scan;
-		HeapTuple tup;
+		state->shards[i].seqnum = makeStringInfo();
 
-		TupleTableSlot *slot =
-			MakeSingleTupleTableSlot(RelationGetDescr(consumers));
-		ScanKeyData skey[1];
-		ScanKeyInit(&skey[0], -2, BTEqualStrategyNumber, F_OIDEQ,
-				ObjectIdGetDatum(oid));
+		const kinesis_shard_metadata *smeta =
+			kinesis_stream_metadata_get_shard(meta, i);
 
-		scan = heap_beginscan(consumers, GetTransactionSnapshot(), 1, skey);
-		tup = heap_getnext(scan, ForwardScanDirection);
-
-		if (!HeapTupleIsValid(tup))
-			elog(ERROR, "kinesis_consumer %d not found", oid);
-
-		ExecStoreTuple(tup, slot, InvalidBuffer, false);
-		state->id = HeapTupleGetOid(tup);
-
-		Datum endpoint_name = slot_getattr(slot, 1, &isnull);
-		Datum stream_name = slot_getattr(slot, 2, &isnull);
-		Datum relation_name = slot_getattr(slot, 3, &isnull);
-
-		MemoryContext old = MemoryContextSwitchTo(CacheMemoryContext);
-
-		state->endpoint_name = TextDatumGetCString(endpoint_name);
-		state->kinesis_stream = TextDatumGetCString(stream_name);
-		state->relation = TextDatumGetCString(relation_name);
-
-		MemoryContextSwitchTo(old);
-
-		heap_endscan(scan);
-		ExecDropSingleTupleTableSlot(slot);
+		const char *sid = kinesis_shard_metadata_get_id(smeta);
+		state->shards[i].id = pstrdup(sid);
 	}
 
+	MemoryContextSwitchTo(old);
+
+	const char *query = "select * from pipeline_kinesis_seqnums where consumer_id = $1";
+
+	Oid argtypes[1] = { OIDOID };
+	Datum values[1];
+    char nulls[1];
+
+	MemSet(nulls, 0, sizeof(nulls));
+
+	values[0] = ObjectIdGetDatum(state->id);
+
+	SPI_connect();
+
+	int rv = SPI_execute_with_args(query, 1, argtypes, values, nulls, false, 0);
+
+	if (rv != SPI_OK_SELECT)
+		elog(ERROR, "could not find seqnums");
+
+	int ret = SPI_processed;
+	TupleTableSlot *slot = MakeSingleTupleTableSlot(SPI_tuptable->tupdesc);
+
+	for (i = 0; i < ret; ++i)
 	{
-		HeapScanDesc scan;
-		HeapTuple tup;
+		bool isnull = false;
+		ExecStoreTuple(SPI_tuptable->vals[i], slot, InvalidBuffer, false);
+		print_slot(slot);
 
-		TupleTableSlot *slot =
-			MakeSingleTupleTableSlot(RelationGetDescr(endpoints));
+		Datum d = slot_getattr(slot, 2, &isnull);
+		const char *shard_id = TextDatumGetCString(d);
 
-		ScanKeyData skey[1];
+		int out_ind = find_shard_id(meta, shard_id);
 
-//ScanKeyInit(&skey[0], 1, BTEqualStrategyNumber, F_TEXTEQ,
-//			PointerGetDatum(name));
-//	scan = heap_beginscan(endpoints, GetTransactionSnapshot(), 1, skey);
-//	tup = heap_getnext(scan, ForwardScanDirection);
-//
-//	CStringGetTextDatum
+		if (out_ind == -1)
+			continue;
 
-		text *wef = cstring_to_text("ep");
-
-		ScanKeyInit(&skey[0], 1, BTEqualStrategyNumber,
-				F_TEXTEQ, PointerGetDatum(wef));
-
-		scan = heap_beginscan(endpoints, GetTransactionSnapshot(), 1, skey);
-		tup = heap_getnext(scan, ForwardScanDirection);
-
-		if (!HeapTupleIsValid(tup))
-			elog(ERROR, "kinesis_endpoint wtf %s not found", state->endpoint_name);
-
-		ExecStoreTuple(tup, slot, InvalidBuffer, false);
-
-		Datum region = slot_getattr(slot, 2, &isnull);
-		Datum credfile = slot_getattr(slot, 3, &isnull);
-		Datum url = slot_getattr(slot, 4, &isnull);
+		d = slot_getattr(slot, 3, &isnull);
+		const char *seq = TextDatumGetCString(d);
 
 		MemoryContext old = MemoryContextSwitchTo(CacheMemoryContext);
-
-		state->endpoint_region = TextDatumGetCString(region);
-		state->endpoint_credfile = TextDatumGetCString(credfile);
-		state->endpoint_url = isnull ? NULL : TextDatumGetCString(url);
-
+		appendStringInfoString(state->shards[out_ind].seqnum, seq);
 		MemoryContextSwitchTo(old);
 
-		heap_endscan(scan);
-		ExecDropSingleTupleTableSlot(slot);
+		elog(LOG, "shard id %s seq %s", shard_id, seq);
 	}
 
-	// XXX - read it
-	state->batchsize = 1000;
-
-	heap_close(consumers, NoLock);
-	heap_close(endpoints, NoLock);
+	SPI_finish();
 }
+
+static void
+save_consumer_state(KinesisConsumerState *state)
+{
+	int i = 0;
+	char *query = "INSERT INTO pipeline_kinesis_seqnums VALUES ($1, $2, $3) on conflict(consumer_id, shard_id) do update set (seqnum) = ($3);";
+
+	Oid argtypes[3] = { OIDOID, TEXTOID, TEXTOID };
+	Datum values[3];
+    char nulls[3];
+	MemSet(nulls, 0, sizeof(nulls));
+
+	SPI_connect();
+
+	SPIPlanPtr ptr = SPI_prepare(query, 3, argtypes);
+	Assert(ptr);
+
+	for (i = 0; i < state->num_shards; ++i)
+	{
+		values[0] = ObjectIdGetDatum(state->id);
+		values[1] = CStringGetTextDatum(state->shards[i].id);
+		values[2] = CStringGetTextDatum(state->shards[i].seqnum->data);
+
+		int rv = SPI_execute_plan(ptr, values, nulls, false, 0);
+
+		if (rv != SPI_OK_INSERT)
+			elog(ERROR, "could not update seqnums %d", rv);
+	}
+
+	SPI_finish();
+}
+
 
 void kinesis_consume_main(Datum arg)
 {
+	int si;
 	int i;
 	char *dbname;
 	CopyStmt *copy;
@@ -566,12 +514,13 @@ void kinesis_consume_main(Datum arg)
 
 	BackgroundWorkerInitializeConnectionByOid(cinfo->dboid, 0);
 
-	// create a list of shard ids
-
 	StartTransactionCommand();
-	load_consumer_state(oid, &state);
+	load_consumer_state(&state, oid);
 
-	kinesis_set_logger(NULL, log_fn);
+	copy = get_copy_statement(state.relation);
+
+//	kinesis_set_logger(NULL, log_fn);
+
 	kinesis_client *client = kinesis_client_create(state.endpoint_region,
 												   state.endpoint_credfile,
 												   state.endpoint_url);
@@ -579,117 +528,83 @@ void kinesis_consume_main(Datum arg)
 	kinesis_stream_metadata *stream_meta =
 		kinesis_client_create_stream_metadata(client, state.kinesis_stream);
 
-	// XXX - better error handling.
-
 	if (!stream_meta)
 		elog(ERROR, "failed to get kinesis metadata for %s",
 				state.kinesis_stream);
 
-	int num_shards = kinesis_stream_metadata_get_num_shards(stream_meta);
-
-	// XXX - need to handle merge / split streams properly at some point
-	// 	   - some sort of tree following
-
-	// load shard state.
-	// malloc num_shards in
-	//
-	// List
-	// {
-	//     name
-	//     seqnum
-	//     kinesis_consumer
-	// }
-
-	elog(LOG, "got num %d shards", num_shards);
-
-	for (i = 0; i < num_shards; ++i)
-	{
-		const kinesis_shard_metadata *shard_meta =
-			kinesis_stream_metadata_get_shard(stream_meta, i);
-
-		const char *shard_id = kinesis_shard_metadata_get_id(shard_meta);
-
-		elog(LOG, "shard %d %s", i, shard_id);
-	}
+	query_meta(&state, stream_meta);
 
 	kinesis_client_destroy_stream_metadata(stream_meta);
-
-	//	kinesis_stream_metadata *meta =
-	//		kinesis_get_stream_metadata(state.kinesis_stream);
-	// set up endpoint,
-	//	err = rd_kafka_metadata(kafka, false, topic, &meta, CONSUMER_TIMEOUT);
-	//	copy = get_copy_statement(relname);
-
 	CommitTransactionCommand();
 
-	elog(LOG, "derp %s %s %s",
-			state.endpoint_name,
-			state.kinesis_stream,
-			state.relation);
+	elog(LOG, "derp");
 
-//	kinesis_consumer *kc = kinesis_consumer_create("test", "0");
-//	kinesis_consumer_start(kc);
-//
-//	StringInfo info = makeStringInfo();
-//	StringInfo last_seq = makeStringInfo();
-//
-//	int ctr = 0;
-//
-//	while (!got_sigterm)
-//	{
-//		const kinesis_batch *batch = kinesis_consume(kc, 1000);
-//
-//		if (!batch)
-//		{
-//			elog(LOG, "main timeout");
-//			continue;
-//		}
-//
-//		resetStringInfo(info);
-//
-//		elog(LOG, "%3.6f consumer got %d behind %ld", get_time(),
-//				kinesis_batch_get_size(batch),
-//				kinesis_batch_get_millis_behind_latest(batch));
-//
-//		int size = kinesis_batch_get_size(batch);
-//
-//		for (i = 0; i < size; ++i)
-//		{
-//			const kinesis_record *r = kinesis_batch_get_record(batch, i);
-//			const char *pk = kinesis_record_get_partition_key(r);
-//			double t = kinesis_record_get_arrival_time(r);
-//
-//			int n = kinesis_record_get_data_size(r);
-//			const uint8_t *d = kinesis_record_get_data(r);
-//			const char *seq = kinesis_record_get_sequence_number(r);
-//
-//			elog(LOG, "seq %s rec %.*s", seq, n, d);
-//
-//			appendBinaryStringInfo(info, (const char*) d, n);
-//			appendStringInfoChar(info, '\n');
-//
-//			resetStringInfo(last_seq);
-//			appendStringInfoString(last_seq, seq);
-//		}
-//
-//		kinesis_batch_destroy(batch);
-//
-//		if (!size)
-//			continue;
-//
-//		StartTransactionCommand();
-//		execute_copy(copy, info);
-//
-//		Relation seqrel = heap_openrv(makeRangeVar(NULL, "pipeline_kinesis_seqnums", -1), RowExclusiveLock);
-//
-//		save_consumer_state(seqrel, last_seq);
-//
-//		heap_close(seqrel, NoLock);
-//
-//		CommitTransactionCommand();
-//	}
-//
-//	kinesis_consumer_destroy(kc);
+	for (si = 0; si < state.num_shards; ++si)
+	{
+		state.shards[si].kc = kinesis_consumer_create(client,
+				state.kinesis_stream,
+				state.shards[si].id,
+				state.shards[si].seqnum->data);
+
+		kinesis_consumer_start(state.shards[si].kc);
+	}
+
+	StringInfo batch_buffer = makeStringInfo();
+
+	while (!got_sigterm)
+	{
+		resetStringInfo(batch_buffer);
+
+		for (si = 0; si < state.num_shards; ++si)
+		{
+			ShardState *shard = &state.shards[si];
+			const kinesis_batch *batch = kinesis_consume(shard->kc, 1000);
+
+			if (!batch)
+			{
+				elog(LOG, "main timeout");
+				continue;
+			}
+
+			int size = kinesis_batch_get_size(batch);
+
+			for (i = 0; i < size; ++i)
+			{
+				const kinesis_record *r = kinesis_batch_get_record(batch, i);
+				const char *pk = kinesis_record_get_partition_key(r);
+				double t = kinesis_record_get_arrival_time(r);
+
+				int n = kinesis_record_get_data_size(r);
+				const uint8_t *d = kinesis_record_get_data(r);
+				const char *seq = kinesis_record_get_sequence_number(r);
+
+				appendBinaryStringInfo(batch_buffer, (const char*) d, n);
+				appendStringInfoChar(batch_buffer, '\n');
+
+				resetStringInfo(shard->seqnum);
+				appendStringInfoString(shard->seqnum, seq);
+			}
+
+			kinesis_batch_destroy(batch);
+		}
+
+		if (batch_buffer->len == 0)
+			continue;
+
+		elog(LOG, "got data");
+
+		StartTransactionCommand();
+		execute_copy(copy, batch_buffer);
+
+		double a = get_time();
+		save_consumer_state(&state);
+		double b = get_time();
+		elog(LOG, "elapsed %3.6f", b-a);
+
+		CommitTransactionCommand();
+	}
+
+ // destroy
 }
 
 static bool
@@ -717,14 +632,6 @@ launch_worker(Oid oid)
 	sprintf(worker.bgw_function_name, "kinesis_consume_main");
 
 	snprintf(worker.bgw_name, BGW_MAXLEN, "[kinesis consumer] %d", oid);
-//			TextDatumGetCString(relation), TextDatumGetCString(endpoint), TextDatumGetCString(stream));
-
-
-//	kinesis_consumer
-//	proc->consumer_id = consumer->id;
-//	proc->partition_group = i;
-//	proc->start_offset = offset;
-//	namestrcpy(&proc->dbname, get_database_name(MyDatabaseId));
 
 	if (!RegisterDynamicBackgroundWorker(&worker, &handle))
 		return false;
@@ -738,25 +645,13 @@ PG_FUNCTION_INFO_V1(kinesis_consume_begin_sr);
 Datum
 kinesis_consume_begin_sr(PG_FUNCTION_ARGS)
 {
-	HeapTuple tup;
-	Relation endpoints;
-	Relation consumers;
-	ScanKeyData skey[1];
-	HeapScanDesc scan;
+	char *query = "INSERT INTO pipeline_kinesis_consumers VALUES ($1, $2, $3, $4) on conflict(endpoint, stream, relation) do update set (batchsize) = ($4) RETURNING oid;";
 
-	text *endpoint;
-	text *stream;
-	text *relation;
+    Oid argtypes[5] = { TEXTOID, TEXTOID, TEXTOID, INT4OID, INT4OID };
+	Datum values[5];
+    char nulls[5];
 
-	int batchsize = 0;
-	int parallelism = 0;
-
-	text *start_seq = NULL;
-
-	Oid oid;
-
-	(void) (start_seq);
-	(void) (oid);
+	MemSet(nulls, 0, sizeof(nulls));
 
 	if (PG_ARGISNULL(0))
 		elog(ERROR, "endpoint cannot be null");
@@ -765,57 +660,32 @@ kinesis_consume_begin_sr(PG_FUNCTION_ARGS)
 	if (PG_ARGISNULL(2))
 		elog(ERROR, "relation cannot be null");
 
-	endpoint = PG_GETARG_TEXT_P(0);
-	stream = PG_GETARG_TEXT_P(1);
-	relation = PG_GETARG_TEXT_P(2);
+	values[0] = PG_GETARG_DATUM(0);
+	values[1] = PG_GETARG_DATUM(1);
+	values[2] = PG_GETARG_DATUM(2);
 
 	if (PG_ARGISNULL(3))
-		batchsize = 1000;
+		values[3] = Int32GetDatum(1000);
 	else
-		batchsize = PG_GETARG_INT32(3);
+		values[3] = PG_GETARG_DATUM(3);
 
-	if (PG_ARGISNULL(4))
-		parallelism = 1;
-	else
-		parallelism = PG_GETARG_INT32(4);
+	SPI_connect();
 
+	int rv = SPI_execute_with_args(query, 4, argtypes, values, nulls, false, 1);
 
-	if (PG_ARGISNULL(5))
-		start_seq = NULL;
-	else
-		start_seq = PG_GETARG_TEXT_P(5);
+	if (rv != SPI_OK_INSERT_RETURNING)
+		elog(ERROR, "could not create consumer");
 
-	// find the matching endpoint
-	endpoints = heap_openrv(makeRangeVar(NULL,
-				"pipeline_kinesis_endpoints", -1), AccessExclusiveLock);
+	TupleTableSlot *slot = MakeSingleTupleTableSlot(SPI_tuptable->tupdesc);
+	ExecStoreTuple(SPI_tuptable->vals[0], slot, InvalidBuffer, false);
 
-	ScanKeyInit(&skey[0], 1, BTEqualStrategyNumber,
-			F_TEXTEQ, PointerGetDatum(endpoint));
+	bool isnull = false;
+	Datum d = slot_getattr(slot, 1, &isnull);
+	Oid oid = DatumGetObjectId(d);
 
-	scan = heap_beginscan(endpoints, GetTransactionSnapshot(), 1, skey);
-	tup = heap_getnext(scan, ForwardScanDirection);
-
-	if (!HeapTupleIsValid(tup))
-	{
-		elog(ERROR, "endpoint %s does not exist",
-				TextDatumGetCString(endpoint));
-	}
-
-	consumers =
-		heap_openrv(makeRangeVar(NULL, "pipeline_kinesis_consumers", -1),
-				AccessExclusiveLock);
-
-	oid = create_consumer(consumers, endpoint, relation, stream,
-			batchsize, parallelism);
-
-	// worker needs to know consumer oid.
-	// thats about it.
 	launch_worker(oid);
 
-	heap_close(consumers, NoLock);
-
-	heap_endscan(scan);
-	heap_close(endpoints, NoLock);
+	SPI_finish();
 
 	RETURN_SUCCESS();
 }
