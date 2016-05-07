@@ -43,7 +43,6 @@
 PG_MODULE_MAGIC;
 
 extern void _PG_init(void);
-extern void _PG_fini(void);
 
 HTAB *consumer_info;
 
@@ -93,11 +92,6 @@ _PG_init(void)
 
 	consumer_info = ShmemInitHash("KinsesisConsumerInfo", 4, 64,
 			&ctl, HASH_ELEM | HASH_FUNCTION);
-}
-
-void
-_PG_fini(void)
-{
 }
 
 /*
@@ -180,21 +174,14 @@ kinesis_consume_main_sigterm(SIGNAL_ARGS)
 
 extern void kinesis_consume_main(Datum arg);
 
-
-static double
-get_time()
-{
-    struct timeval tv;
-    gettimeofday(&tv, 0);
-    return tv.tv_sec + (tv.tv_usec / 1000000.0);
-}
-
 static void log_fn(void *ctx, const char *s)
 {
 	// aws log messages have a newline on them
 
 	int n = strlen(s);
-	elog(LOG, "%.*s", n-1, s);
+
+	if (n > 0)
+		elog(LOG, "%.*s", n-1, s);
 }
 
 static CopyStmt *
@@ -204,7 +191,6 @@ get_copy_statement(const char *relname)
 	CopyStmt *stmt = makeNode(CopyStmt);
 	Relation rel;
 	TupleDesc desc;
-	DefElem *format = makeNode(DefElem);
 	int i;
 
 	RangeVar *rv = makeRangeVar(NULL, (char*) relname, -1);
@@ -231,34 +217,6 @@ get_copy_statement(const char *relname)
 			continue;
 		stmt->attlist = lappend(stmt->attlist, makeString(name));
 	}
-
-//	if (consumer->delimiter)
-//	{
-//		DefElem *delim = makeNode(DefElem);
-//		delim->defname = OPTION_DELIMITER;
-//		delim->arg = (Node *) makeString(consumer->delimiter);
-//		stmt->options = lappend(stmt->options, delim);
-//	}
-//
-//	format->defname = OPTION_FORMAT;
-//	format->arg = (Node *) makeString(consumer->format);
-//	stmt->options = lappend(stmt->options, format);
-//
-//	if (consumer->quote)
-//	{
-//		DefElem *quote = makeNode(DefElem);
-//		quote->defname = OPTION_QUOTE;
-//		quote->arg = (Node *) makeString(consumer->quote);
-//		stmt->options = lappend(stmt->options, quote);
-//	}
-//
-//	if (consumer->escape)
-//	{
-//		DefElem *escape = makeNode(DefElem);
-//		escape->defname = OPTION_ESCAPE;
-//		escape->arg = (Node *) makeString(consumer->escape);
-//		stmt->options = lappend(stmt->options, escape);
-//	}
 
 	heap_close(rel, NoLock);
 	MemoryContextSwitchTo(old);
@@ -383,8 +341,16 @@ find_shard_id(kinesis_stream_metadata *meta, const char *id)
 static void
 query_meta(KinesisConsumerState *state, kinesis_stream_metadata *meta)
 {
+	const char *query = "select * from pipeline_kinesis_seqnums "
+		"where consumer_id = $1";
+
 	int num_shards = kinesis_stream_metadata_get_num_shards(meta);
 	int i = 0;
+	Oid argtypes[1] = { OIDOID };
+	Datum values[1];
+    char nulls[1];
+	int rv = 0;
+	TupleTableSlot *slot = NULL;
 
 	MemoryContext old = MemoryContextSwitchTo(CacheMemoryContext);
 	state->num_shards = num_shards;
@@ -392,23 +358,14 @@ query_meta(KinesisConsumerState *state, kinesis_stream_metadata *meta)
 
 	for (i = 0; i < num_shards; ++i)
 	{
-		state->shards[i].seqnum = makeStringInfo();
-
 		const kinesis_shard_metadata *smeta =
 			kinesis_stream_metadata_get_shard(meta, i);
 
-		const char *sid = kinesis_shard_metadata_get_id(smeta);
-		state->shards[i].id = pstrdup(sid);
+		state->shards[i].seqnum = makeStringInfo();
+		state->shards[i].id = pstrdup(kinesis_shard_metadata_get_id(smeta));
 	}
 
 	MemoryContextSwitchTo(old);
-
-	const char *query =
-		"select * from pipeline_kinesis_seqnums where consumer_id = $1";
-
-	Oid argtypes[1] = { OIDOID };
-	Datum values[1];
-    char nulls[1];
 
 	MemSet(nulls, 0, sizeof(nulls));
 
@@ -416,37 +373,40 @@ query_meta(KinesisConsumerState *state, kinesis_stream_metadata *meta)
 
 	SPI_connect();
 
-	int rv = SPI_execute_with_args(query, 1, argtypes, values, nulls, false, 0);
+	rv = SPI_execute_with_args(query, 1, argtypes, values, nulls, false, 0);
 
 	if (rv != SPI_OK_SELECT)
 		elog(ERROR, "could not find seqnums");
 
-	int ret = SPI_processed;
-	TupleTableSlot *slot = MakeSingleTupleTableSlot(SPI_tuptable->tupdesc);
+	slot = MakeSingleTupleTableSlot(SPI_tuptable->tupdesc);
 
-	for (i = 0; i < ret; ++i)
+	for (i = 0; i < SPI_processed; ++i)
 	{
 		bool isnull = false;
+		Datum d;
+		const char *shard_id;
+		int out_ind = 0;
+		const char *seq = 0;
+		MemoryContext old;
+
 		ExecStoreTuple(SPI_tuptable->vals[i], slot, InvalidBuffer, false);
 
 		print_slot(slot);
 
-		Datum d = slot_getattr(slot, 2, &isnull);
-		const char *shard_id = TextDatumGetCString(d);
+		d = slot_getattr(slot, 2, &isnull);
+		shard_id = TextDatumGetCString(d);
 
-		int out_ind = find_shard_id(meta, shard_id);
+		out_ind = find_shard_id(meta, shard_id);
 
 		if (out_ind == -1)
 			continue;
 
 		d = slot_getattr(slot, 3, &isnull);
-		const char *seq = TextDatumGetCString(d);
+		seq = TextDatumGetCString(d);
 
-		MemoryContext old = MemoryContextSwitchTo(CacheMemoryContext);
+		old = MemoryContextSwitchTo(CacheMemoryContext);
 		appendStringInfoString(state->shards[out_ind].seqnum, seq);
 		MemoryContextSwitchTo(old);
-
-		elog(LOG, "shard id %s seq %s", shard_id, seq);
 	}
 
 	SPI_finish();
@@ -462,20 +422,23 @@ save_consumer_state(KinesisConsumerState *state)
 	Oid argtypes[3] = { OIDOID, TEXTOID, TEXTOID };
 	Datum values[3];
     char nulls[3];
+	SPIPlanPtr ptr;
+
 	MemSet(nulls, 0, sizeof(nulls));
 
 	SPI_connect();
 
-	SPIPlanPtr ptr = SPI_prepare(query, 3, argtypes);
+	ptr = SPI_prepare(query, 3, argtypes);
 	Assert(ptr);
 
 	for (i = 0; i < state->num_shards; ++i)
 	{
+		int rv = 0;
 		values[0] = ObjectIdGetDatum(state->id);
 		values[1] = CStringGetTextDatum(state->shards[i].id);
 		values[2] = CStringGetTextDatum(state->shards[i].seqnum->data);
 
-		int rv = SPI_execute_plan(ptr, values, nulls, false, 0);
+		rv = SPI_execute_plan(ptr, values, nulls, false, 0);
 
 		if (rv != SPI_OK_INSERT)
 			elog(ERROR, "could not update seqnums %d", rv);
@@ -488,10 +451,13 @@ void kinesis_consume_main(Datum arg)
 {
 	int si;
 	int i;
-	char *dbname;
 	CopyStmt *copy;
 	Oid oid;
 	bool found = false;
+	KinesisConsumerInfo *cinfo;
+	kinesis_client *client;
+	kinesis_stream_metadata *stream_meta;
+	StringInfo batch_buffer;
 
 	KinesisConsumerState state;
 
@@ -503,8 +469,7 @@ void kinesis_consume_main(Datum arg)
 
 	oid = DatumGetObjectId(arg);
 
-	KinesisConsumerInfo *cinfo =
-		hash_search(consumer_info, &oid, HASH_FIND, &found);
+	cinfo = hash_search(consumer_info, &oid, HASH_FIND, &found);
 
 	Assert(found);
 	Assert(cinfo);
@@ -518,11 +483,11 @@ void kinesis_consume_main(Datum arg)
 
 	kinesis_set_logger(NULL, log_fn);
 
-	kinesis_client *client = kinesis_client_create(state.endpoint_region,
-												   state.endpoint_credfile,
-												   state.endpoint_url);
+	client = kinesis_client_create(state.endpoint_region,
+			state.endpoint_credfile,
+			state.endpoint_url);
 
-	kinesis_stream_metadata *stream_meta =
+	stream_meta =
 		kinesis_client_create_stream_metadata(client, state.kinesis_stream);
 
 	if (!stream_meta)
@@ -546,7 +511,7 @@ void kinesis_consume_main(Datum arg)
 		kinesis_consumer_start(state.shards[si].kc);
 	}
 
-	StringInfo batch_buffer = makeStringInfo();
+	batch_buffer = makeStringInfo();
 
 	while (!got_sigterm)
 	{
@@ -554,6 +519,7 @@ void kinesis_consume_main(Datum arg)
 
 		for (si = 0; si < state.num_shards; ++si)
 		{
+			int size = 0;
 			ShardState *shard = &state.shards[si];
 			const kinesis_batch *batch = kinesis_consume(shard->kc, 1000);
 
@@ -563,14 +529,11 @@ void kinesis_consume_main(Datum arg)
 				continue;
 			}
 
-			int size = kinesis_batch_get_size(batch);
+			size = kinesis_batch_get_size(batch);
 
 			for (i = 0; i < size; ++i)
 			{
 				const kinesis_record *r = kinesis_batch_get_record(batch, i);
-				const char *pk = kinesis_record_get_partition_key(r);
-				double t = kinesis_record_get_arrival_time(r);
-
 				int n = kinesis_record_get_data_size(r);
 				const uint8_t *d = kinesis_record_get_data(r);
 				const char *seq = kinesis_record_get_sequence_number(r);
@@ -661,13 +624,21 @@ kinesis_consume_begin_sr(PG_FUNCTION_ARGS)
 		"($1, $2, $3, $4) on conflict(endpoint, stream, relation) "
 		"do update set (batchsize) = ($4) RETURNING oid;";
 
+	Relation lockrel;
+	int rv;
+
     Oid argtypes[5] = { TEXTOID, TEXTOID, TEXTOID, INT4OID, INT4OID };
 	Datum values[5];
     char nulls[5];
 
+	TupleTableSlot *slot;
+	bool isnull = false;
+	Datum d;
+	Oid oid;
+
 	MemSet(nulls, 0, sizeof(nulls));
 
-	Relation lockrel = acquire_consumer_lock();
+	lockrel = acquire_consumer_lock();
 
 	if (PG_ARGISNULL(0))
 		elog(ERROR, "endpoint cannot be null");
@@ -687,17 +658,16 @@ kinesis_consume_begin_sr(PG_FUNCTION_ARGS)
 
 	SPI_connect();
 
-	int rv = SPI_execute_with_args(query, 4, argtypes, values, nulls, false, 1);
+	rv = SPI_execute_with_args(query, 4, argtypes, values, nulls, false, 1);
 
 	if (rv != SPI_OK_INSERT_RETURNING)
-		elog(ERROR, "could not create consumer");
+		elog(ERROR, "could not create consumer %d", rv);
 
-	TupleTableSlot *slot = MakeSingleTupleTableSlot(SPI_tuptable->tupdesc);
+	slot = MakeSingleTupleTableSlot(SPI_tuptable->tupdesc);
 	ExecStoreTuple(SPI_tuptable->vals[0], slot, InvalidBuffer, false);
 
-	bool isnull = false;
-	Datum d = slot_getattr(slot, 1, &isnull);
-	Oid oid = DatumGetObjectId(d);
+	d = slot_getattr(slot, 1, &isnull);
+	oid = DatumGetObjectId(d);
 
 	launch_worker(oid);
 	SPI_finish();
@@ -712,10 +682,14 @@ find_consumer(Datum endpoint, Datum stream, Datum relation)
 {
 	char *query = "SELECT oid from pipeline_kinesis_consumers where endpoint = $1 and stream = $2 and relation = $3;";
 
-
     Oid argtypes[3] = { TEXTOID, TEXTOID, TEXTOID };
 	Datum values[3];
     char nulls[3];
+	int rv;
+
+	TupleTableSlot *slot;
+	bool isnull = false;
+	Datum d;
 
 	values[0] = endpoint;
 	values[1] = stream;
@@ -723,16 +697,16 @@ find_consumer(Datum endpoint, Datum stream, Datum relation)
 
 	MemSet(nulls, 0, sizeof(nulls));
 
-	int rv = SPI_execute_with_args(query, 4, argtypes, values, nulls, false, 1);
+	rv = SPI_execute_with_args(query, 4, argtypes, values, nulls, false, 1);
 
 	if (rv != SPI_OK_SELECT)
 		elog(ERROR, "could not find");
 
-	TupleTableSlot *slot = MakeSingleTupleTableSlot(SPI_tuptable->tupdesc);
+	slot = MakeSingleTupleTableSlot(SPI_tuptable->tupdesc);
 	ExecStoreTuple(SPI_tuptable->vals[0], slot, InvalidBuffer, false);
 
-	bool isnull = false;
-	Datum d = slot_getattr(slot, 1, &isnull);
+	isnull = false;
+	d = slot_getattr(slot, 1, &isnull);
 
 	return DatumGetObjectId(d);
 }
@@ -745,11 +719,12 @@ delete_consumer(Oid oid)
     Oid argtypes[1] = { OIDOID };
 	Datum values[1];
     char nulls[1];
+	int rv;
 
 	values[0] = ObjectIdGetDatum(oid);
 	MemSet(nulls, 0, sizeof(nulls));
 
-	int rv = SPI_execute_with_args(query, 1, argtypes, values, nulls, false, 1);
+	rv = SPI_execute_with_args(query, 1, argtypes, values, nulls, false, 1);
 
 	if (rv != SPI_OK_DELETE)
 		elog(ERROR, "could not delete");
@@ -760,17 +735,17 @@ Datum
 kinesis_consume_end_sr(PG_FUNCTION_ARGS)
 {
 	Relation lockrel = acquire_consumer_lock();
+	Oid oid;
+	bool found = false;
+	KinesisConsumerInfo *info;
 
 	SPI_connect();
 
-	Oid oid = find_consumer(PG_GETARG_DATUM(0),
+	oid = find_consumer(PG_GETARG_DATUM(0),
 						    PG_GETARG_DATUM(1),
 						    PG_GETARG_DATUM(2));
 
-	bool found = false;
-
-	KinesisConsumerInfo *info =
-		hash_search(consumer_info, &oid, HASH_FIND, &found);
+	info = hash_search(consumer_info, &oid, HASH_FIND, &found);
 
 	TerminateBackgroundWorker(&info->handle);
 
