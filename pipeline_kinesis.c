@@ -105,7 +105,7 @@ Datum
 kinesis_add_endpoint(PG_FUNCTION_ARGS)
 {
 	const char *query =
-		"INSERT INTO pipeline_kinesis_endpoints VALUES ($1, $2, $3, $4)";
+		"INSERT INTO pipeline_kinesis.endpoints VALUES ($1, $2, $3, $4)";
     Oid argtypes[4] = { TEXTOID, TEXTOID, TEXTOID, TEXTOID };
 
 	Datum values[4];
@@ -143,7 +143,7 @@ Datum
 kinesis_remove_endpoint(PG_FUNCTION_ARGS)
 {
 	const char *query =
-		"DELETE FROM pipeline_kinesis_endpoints WHERE name = $1;";
+		"DELETE FROM pipeline_kinesis.endpoints WHERE name = $1;";
     Oid argtypes[1] = { TEXTOID };
 
 	Datum values[1];
@@ -298,8 +298,8 @@ load_consumer_state(KinesisConsumerState *state, Oid oid)
 	TupleTableSlot *slot;
 	int rv;
 
-	const char *query = "SELECT e.*, c.* FROM pipeline_kinesis_consumers c "
-		"INNER JOIN pipeline_kinesis_endpoints e ON c.endpoint = e.name "
+	const char *query = "SELECT e.*, c.* FROM pipeline_kinesis.consumers c "
+		"INNER JOIN pipeline_kinesis.endpoints e ON c.endpoint = e.name "
 		"WHERE c.oid = $1;";
 
 	Oid argtypes[1] = { OIDOID };
@@ -389,7 +389,7 @@ find_shard_id(kinesis_stream_metadata *meta, const char *id)
 static void
 load_shard_state(KinesisConsumerState *state, kinesis_stream_metadata *meta)
 {
-	const char *query = "SELECT * FROM pipeline_kinesis_seqnums "
+	const char *query = "SELECT * FROM pipeline_kinesis.seqnums "
 		"WHERE consumer_id = $1";
 
 	int num_shards = kinesis_stream_metadata_get_num_shards(meta);
@@ -468,7 +468,7 @@ static void
 save_consumer_state(KinesisConsumerState *state)
 {
 	int i = 0;
-	const char *query = "INSERT INTO pipeline_kinesis_seqnums VALUES "
+	const char *query = "INSERT INTO pipeline_kinesis.seqnums VALUES "
 		"($1, $2, $3) ON CONFLICT(consumer_id, shard_id) "
 		"DO UPDATE SET (seqnum) = ($3);";
 
@@ -700,7 +700,7 @@ static Relation
 acquire_consumer_lock()
 {
 	Relation consumers =
-		heap_openrv(makeRangeVar(NULL, "pipeline_kinesis_consumers", -1),
+		heap_openrv(makeRangeVar("pipeline_kinesis", "consumers", -1),
 				AccessExclusiveLock);
 
 	return consumers;
@@ -720,14 +720,14 @@ drop_consumer_lock(Relation rel)
 /*
  * kinesis_consume_begin_sr
  *
- * creates/updates an entry in pipeline_kinesis_consumers table
+ * creates/updates an entry in pipeline_kinesis.consumers table
  * launches a bgworker if neccessary
  */
 PG_FUNCTION_INFO_V1(kinesis_consume_begin_sr);
 Datum
 kinesis_consume_begin_sr(PG_FUNCTION_ARGS)
 {
-	const char *query = "INSERT INTO pipeline_kinesis_consumers VALUES "
+	const char *query = "INSERT INTO pipeline_kinesis.consumers VALUES "
 		"($1, $2, $3, $4) ON CONFLICT(endpoint, stream, relation) "
 		"DO UPDATE SET (batchsize) = ($4) RETURNING oid;";
 
@@ -792,7 +792,7 @@ kinesis_consume_begin_sr(PG_FUNCTION_ARGS)
 static Oid
 find_consumer(Datum endpoint, Datum stream, Datum relation)
 {
-	const char *query = "SELECT oid FROM pipeline_kinesis_consumers "
+	const char *query = "SELECT oid FROM pipeline_kinesis.consumers "
 		"WHERE endpoint = $1 AND stream = $2 AND relation = $3;";
 
     Oid argtypes[3] = { TEXTOID, TEXTOID, TEXTOID };
@@ -867,7 +867,7 @@ kinesis_consume_begin_all(PG_FUNCTION_ARGS)
 {
 	Relation lockrel = acquire_consumer_lock();
 
-	const char *query = "SELECT oid FROM pipeline_kinesis_consumers;";
+	const char *query = "SELECT oid FROM pipeline_kinesis.consumers;";
 	int rv = 0;
 	int i = 0;
 	TupleTableSlot *slot;
