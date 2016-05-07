@@ -60,9 +60,12 @@ class AltLogSystem : public Logging::FormattedLogSystem
 	AltLogSystem(Logging::LogLevel logLevel) : FormattedLogSystem(logLevel) {}
 	virtual ~AltLogSystem() {}
 
+	std::mutex mutex_;
+
   protected:
 	virtual void ProcessFormattedStatement(Aws::String&& statement)
 	{
+		std::unique_lock<std::mutex> lock(mutex_);
 		logger_fn(logger_ctx, statement.c_str());
 	}
 };
@@ -190,7 +193,6 @@ kinesis_consumer_create(kinesis_client *k,
 	}
 
 	Aws::String shard_iter = outcome.GetResult().GetShardIterator();
-	AWS_LOG_INFO("derp", "shard iter %s", shard_iter.c_str()); 
 
 	auto *cq = new concurrent_queue<GetRecordsOutcome*>(100);
 	return new kinesis_consumer{kc, cq, {true}, NULL, shard_iter};
@@ -221,7 +223,6 @@ kinesis_consumer_destroy(kinesis_consumer *kc)
 		kinesis_consumer_stop(kc);
 
 	delete kc->queue;
-	delete kc->client;
 	delete kc;
 }
 
@@ -248,13 +249,9 @@ consume_thread(kinesis_consumer *kc)
 
 		double now = get_time();
 
-//		printf("%3.6f request time %3.6f\n", now, now - last_request_time);
-
 		if (new_rec_out->IsSuccess())
 		{
 			kc->shard_iter = new_rec_out->GetResult().GetNextShardIterator();
-
-			AWS_LOG_INFO("derp", "shard iter %s", kc->shard_iter.c_str()); 
 			bool pushed = false;
 
 			int num_rec = kinesis_batch_get_size((kinesis_batch*) new_rec_out);
@@ -262,14 +259,11 @@ consume_thread(kinesis_consumer *kc)
 			while (!pushed && kc->keep_running)
 			{
 				pushed = kc->queue->push_with_timeout(new_rec_out, 1000);
-
-//				if (pushed)
-//					printf("%3.6f producer pushed %d\n", get_time(), num_rec);
 			}
 		}
 		else
 		{
-//			printf("unsuccessful request\n");
+			// unsuccessful request
 		}
 
 		// Throttling logic
@@ -285,7 +279,7 @@ consume_thread(kinesis_consumer *kc)
 		}
 	}
 
-//	printf("consume thread stopping\n");
+	AWS_LOG_INFO("kinesis_consumer", "thread stopping");
 }
 
 // API for external consumer to pop a batch from the queue

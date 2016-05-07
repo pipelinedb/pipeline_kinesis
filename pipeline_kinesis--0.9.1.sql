@@ -54,11 +54,11 @@ RETURNS text
 AS 'MODULE_PATHNAME', 'kinesis_consume_begin_sr'
 LANGUAGE C VOLATILE;
 
---CREATE FUNCTION kinesis_consume_end_sr (
---  endpoint   text,
---  stream 	text,
---  relation     text
---)
---RETURNS text
---AS 'MODULE_PATHNAME', 'kinesis_consume_end_sr'
---LANGUAGE C IMMUTABLE;
+CREATE FUNCTION kinesis_consume_end_sr (
+  endpoint   text,
+  stream 	text,
+  relation     text
+)
+RETURNS text
+AS 'MODULE_PATHNAME', 'kinesis_consume_end_sr'
+LANGUAGE C VOLATILE;

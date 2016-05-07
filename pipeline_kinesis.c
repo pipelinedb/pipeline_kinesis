@@ -45,12 +45,13 @@ PG_MODULE_MAGIC;
 extern void _PG_init(void);
 extern void _PG_fini(void);
 
-static HTAB *consumer_info;
+HTAB *consumer_info;
 
 typedef struct KinesisConsumerInfo
 {
 	Oid oid;
 	Oid dboid;
+	BackgroundWorkerHandle handle;
 
 } KinesisConsumerInfo;
 
@@ -302,6 +303,8 @@ execute_copy(CopyStmt *stmt, StringInfo buf)
 static void
 load_consumer_state(KinesisConsumerState *state, Oid oid)
 {
+	TupleTableSlot *slot;
+	int rv;
 	const char *query = "select e.*, c.* from pipeline_kinesis_consumers c inner join pipeline_kinesis_endpoints e on c.endpoint = e.name where c.oid = $1;";
 
     Oid argtypes[1] = { OIDOID };
@@ -315,17 +318,16 @@ load_consumer_state(KinesisConsumerState *state, Oid oid)
 
 	SPI_connect();
 
-	int rv = SPI_execute_with_args(query, 1, argtypes, values, nulls, false, 1);
+	rv = SPI_execute_with_args(query, 1, argtypes, values, nulls, false, 1);
 
 	if (rv != SPI_OK_SELECT)
 		elog(ERROR, "could not load consumer state %d", oid);
 
-	TupleTableSlot *slot = MakeSingleTupleTableSlot(SPI_tuptable->tupdesc);
+	slot = MakeSingleTupleTableSlot(SPI_tuptable->tupdesc);
 	ExecStoreTuple(SPI_tuptable->vals[0], slot, InvalidBuffer, false);
 
-	print_slot(slot);
-
 	{
+		Datum url;
 		bool isnull = false;
 		MemoryContext old = MemoryContextSwitchTo(CacheMemoryContext);
 
@@ -337,7 +339,7 @@ load_consumer_state(KinesisConsumerState *state, Oid oid)
 		state->endpoint_credfile =
 			TextDatumGetCString(slot_getattr(slot, 3, &isnull));
 
-		Datum url = slot_getattr(slot, 5, &isnull);
+		url = slot_getattr(slot, 5, &isnull);
 
 		if (!isnull)
 		{
@@ -381,10 +383,6 @@ find_shard_id(kinesis_stream_metadata *meta, const char *id)
 static void
 query_meta(KinesisConsumerState *state, kinesis_stream_metadata *meta)
 {
-	// select * from pipeline_kinesis_seqnums where consumer_id = derp.
-	// create place to stash the sequence numbers (from num_shards)
-	// then they have to match up with our shard ids
-
 	int num_shards = kinesis_stream_metadata_get_num_shards(meta);
 	int i = 0;
 
@@ -405,7 +403,8 @@ query_meta(KinesisConsumerState *state, kinesis_stream_metadata *meta)
 
 	MemoryContextSwitchTo(old);
 
-	const char *query = "select * from pipeline_kinesis_seqnums where consumer_id = $1";
+	const char *query =
+		"select * from pipeline_kinesis_seqnums where consumer_id = $1";
 
 	Oid argtypes[1] = { OIDOID };
 	Datum values[1];
@@ -429,6 +428,7 @@ query_meta(KinesisConsumerState *state, kinesis_stream_metadata *meta)
 	{
 		bool isnull = false;
 		ExecStoreTuple(SPI_tuptable->vals[i], slot, InvalidBuffer, false);
+
 		print_slot(slot);
 
 		Datum d = slot_getattr(slot, 2, &isnull);
@@ -456,7 +456,8 @@ static void
 save_consumer_state(KinesisConsumerState *state)
 {
 	int i = 0;
-	char *query = "INSERT INTO pipeline_kinesis_seqnums VALUES ($1, $2, $3) on conflict(consumer_id, shard_id) do update set (seqnum) = ($3);";
+	char *query = "INSERT INTO pipeline_kinesis_seqnums VALUES ($1, $2, $3)"
+		" on conflict(consumer_id, shard_id) do update set (seqnum) = ($3);";
 
 	Oid argtypes[3] = { OIDOID, TEXTOID, TEXTOID };
 	Datum values[3];
@@ -483,7 +484,6 @@ save_consumer_state(KinesisConsumerState *state)
 	SPI_finish();
 }
 
-
 void kinesis_consume_main(Datum arg)
 {
 	int si;
@@ -496,10 +496,7 @@ void kinesis_consume_main(Datum arg)
 	KinesisConsumerState state;
 
 	pqsignal(SIGTERM, kinesis_consume_main_sigterm);
-#define BACKTRACE_SEGFAULTS
-#ifdef BACKTRACE_SEGFAULTS
 	pqsignal(SIGSEGV, debug_segfault);
-#endif
 
 	/* we're now ready to receive signals */
 	BackgroundWorkerUnblockSignals();
@@ -519,7 +516,7 @@ void kinesis_consume_main(Datum arg)
 
 	copy = get_copy_statement(state.relation);
 
-//	kinesis_set_logger(NULL, log_fn);
+	kinesis_set_logger(NULL, log_fn);
 
 	kinesis_client *client = kinesis_client_create(state.endpoint_region,
 												   state.endpoint_credfile,
@@ -591,31 +588,32 @@ void kinesis_consume_main(Datum arg)
 		if (batch_buffer->len == 0)
 			continue;
 
-		elog(LOG, "got data");
-
 		StartTransactionCommand();
 		execute_copy(copy, batch_buffer);
 
-		double a = get_time();
 		save_consumer_state(&state);
-		double b = get_time();
-		elog(LOG, "elapsed %3.6f", b-a);
-
 		CommitTransactionCommand();
 	}
 
- // destroy
+	for (si = 0; si < state.num_shards; ++si)
+		kinesis_consumer_destroy(state.shards[si].kc);
+
+	kinesis_client_destroy(client);
 }
 
-static bool
+static void
 launch_worker(Oid oid)
 {
 	bool found = false;
 	BackgroundWorker worker;
-	BackgroundWorkerHandle *handle;
 
 	KinesisConsumerInfo *info =
 		hash_search(consumer_info, &oid, HASH_ENTER, &found);
+
+	BackgroundWorkerHandle *tmp_handle;
+
+	if (found)
+		return;
 
 	info->oid = oid;
 	info->dboid = MyDatabaseId;
@@ -633,25 +631,43 @@ launch_worker(Oid oid)
 
 	snprintf(worker.bgw_name, BGW_MAXLEN, "[kinesis consumer] %d", oid);
 
-	if (!RegisterDynamicBackgroundWorker(&worker, &handle))
-		return false;
+	if (!RegisterDynamicBackgroundWorker(&worker, &tmp_handle))
+		elog(ERROR, "could not launch worker");
 
-	return true;
+	info->handle = *tmp_handle;
 }
 
-// endpoint, stream, relation,
+static Relation
+acquire_consumer_lock()
+{
+	Relation consumers =
+		heap_openrv(makeRangeVar(NULL, "pipeline_kinesis_consumers", -1),
+				AccessExclusiveLock);
+
+	return consumers;
+}
+
+static void
+drop_consumer_lock(Relation rel)
+{
+	heap_close(rel, NoLock);
+}
 
 PG_FUNCTION_INFO_V1(kinesis_consume_begin_sr);
 Datum
 kinesis_consume_begin_sr(PG_FUNCTION_ARGS)
 {
-	char *query = "INSERT INTO pipeline_kinesis_consumers VALUES ($1, $2, $3, $4) on conflict(endpoint, stream, relation) do update set (batchsize) = ($4) RETURNING oid;";
+	char *query = "INSERT INTO pipeline_kinesis_consumers VALUES "
+		"($1, $2, $3, $4) on conflict(endpoint, stream, relation) "
+		"do update set (batchsize) = ($4) RETURNING oid;";
 
     Oid argtypes[5] = { TEXTOID, TEXTOID, TEXTOID, INT4OID, INT4OID };
 	Datum values[5];
     char nulls[5];
 
 	MemSet(nulls, 0, sizeof(nulls));
+
+	Relation lockrel = acquire_consumer_lock();
 
 	if (PG_ARGISNULL(0))
 		elog(ERROR, "endpoint cannot be null");
@@ -684,8 +700,85 @@ kinesis_consume_begin_sr(PG_FUNCTION_ARGS)
 	Oid oid = DatumGetObjectId(d);
 
 	launch_worker(oid);
+	SPI_finish();
+
+	drop_consumer_lock(lockrel);
+
+	RETURN_SUCCESS();
+}
+
+static Oid
+find_consumer(Datum endpoint, Datum stream, Datum relation)
+{
+	char *query = "SELECT oid from pipeline_kinesis_consumers where endpoint = $1 and stream = $2 and relation = $3;";
+
+
+    Oid argtypes[3] = { TEXTOID, TEXTOID, TEXTOID };
+	Datum values[3];
+    char nulls[3];
+
+	values[0] = endpoint;
+	values[1] = stream;
+	values[2] = relation;
+
+	MemSet(nulls, 0, sizeof(nulls));
+
+	int rv = SPI_execute_with_args(query, 4, argtypes, values, nulls, false, 1);
+
+	if (rv != SPI_OK_SELECT)
+		elog(ERROR, "could not find");
+
+	TupleTableSlot *slot = MakeSingleTupleTableSlot(SPI_tuptable->tupdesc);
+	ExecStoreTuple(SPI_tuptable->vals[0], slot, InvalidBuffer, false);
+
+	bool isnull = false;
+	Datum d = slot_getattr(slot, 1, &isnull);
+
+	return DatumGetObjectId(d);
+}
+
+static void
+delete_consumer(Oid oid)
+{
+	char *query = "DELETE from pipeline_kinesis_consumers where oid = $1;";
+
+    Oid argtypes[1] = { OIDOID };
+	Datum values[1];
+    char nulls[1];
+
+	values[0] = ObjectIdGetDatum(oid);
+	MemSet(nulls, 0, sizeof(nulls));
+
+	int rv = SPI_execute_with_args(query, 1, argtypes, values, nulls, false, 1);
+
+	if (rv != SPI_OK_DELETE)
+		elog(ERROR, "could not delete");
+}
+
+PG_FUNCTION_INFO_V1(kinesis_consume_end_sr);
+Datum
+kinesis_consume_end_sr(PG_FUNCTION_ARGS)
+{
+	Relation lockrel = acquire_consumer_lock();
+
+	SPI_connect();
+
+	Oid oid = find_consumer(PG_GETARG_DATUM(0),
+						    PG_GETARG_DATUM(1),
+						    PG_GETARG_DATUM(2));
+
+	bool found = false;
+
+	KinesisConsumerInfo *info =
+		hash_search(consumer_info, &oid, HASH_FIND, &found);
+
+	TerminateBackgroundWorker(&info->handle);
+
+	hash_search(consumer_info, &oid, HASH_REMOVE, &found);
+	delete_consumer(oid);
 
 	SPI_finish();
 
+	drop_consumer_lock(lockrel);
 	RETURN_SUCCESS();
 }
