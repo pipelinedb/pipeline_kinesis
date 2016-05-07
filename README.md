@@ -40,7 +40,7 @@ for i in $(seq 1 100); do aws kinesis put-record --stream-name test --data foo$i
 To load the extension:
 
 ```
-create extension pipeline\_kinesis;
+create extension pipeline_kinesis;
 ```
 
 Add an endpoint:
