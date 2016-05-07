@@ -62,3 +62,8 @@ CREATE FUNCTION kinesis_consume_end_sr (
 RETURNS text
 AS 'MODULE_PATHNAME', 'kinesis_consume_end_sr'
 LANGUAGE C VOLATILE;
+
+CREATE FUNCTION kinesis_consume_begin_all()
+RETURNS text
+AS 'MODULE_PATHNAME', 'kinesis_consume_begin_all'
+LANGUAGE C VOLATILE;

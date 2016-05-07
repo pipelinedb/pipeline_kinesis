@@ -748,12 +748,106 @@ kinesis_consume_end_sr(PG_FUNCTION_ARGS)
 	info = hash_search(consumer_info, &oid, HASH_FIND, &found);
 
 	TerminateBackgroundWorker(&info->handle);
-
 	hash_search(consumer_info, &oid, HASH_REMOVE, &found);
 	delete_consumer(oid);
+
+	SPI_finish();
+	drop_consumer_lock(lockrel);
+
+	RETURN_SUCCESS();
+}
+
+/*
+ * kinesis_consume_begin_all
+ *
+ * Start all consumers
+ */
+PG_FUNCTION_INFO_V1(kinesis_consume_begin_all);
+Datum
+kinesis_consume_begin_all(PG_FUNCTION_ARGS)
+{
+	Relation lockrel = acquire_consumer_lock();
+
+	const char *query = "SELECT oid from pipeline_kinesis_consumers;";
+	int rv = 0;
+	int i = 0;
+	TupleTableSlot *slot;
+	Datum d;
+	Oid oid;
+	bool isnull;
+
+	SPI_connect();
+
+	rv = SPI_execute(query, false, 0);
+
+	if (rv != SPI_OK_SELECT)
+		elog(ERROR, "could not select consumers");
+
+	slot = MakeSingleTupleTableSlot(SPI_tuptable->tupdesc);
+
+	elog(LOG, "got %d", SPI_processed);
+
+	for (i = 0; i < SPI_processed; ++i)
+	{
+		ExecStoreTuple(SPI_tuptable->vals[i], slot, InvalidBuffer, false);
+		d = slot_getattr(slot, 1, &isnull);
+
+		oid = DatumGetObjectId(d);
+		launch_worker(oid);
+	}
 
 	SPI_finish();
 
 	drop_consumer_lock(lockrel);
 	RETURN_SUCCESS();
 }
+
+///*
+// * kinesis_consume_end_all
+// *
+// * Start all consumers
+// */
+//PG_FUNCTION_INFO_V1(kinesis_consume_begin_all);
+//Datum
+//kinesis_consume_begin_all(PG_FUNCTION_ARGS)
+//{
+//	Relation lockrel = acquire_consumer_lock();
+//
+//	const char *query = "SELECT oid from pipeline_kinesis_consumers;";
+//	int rv = 0;
+//	int i = 0;
+//	TupleTableSlot *slot;
+//	Datum d;
+//	Oid oid;
+//	bool isnull;
+//	List *list;
+//
+//	SPI_connect();
+//
+//	rv = SPI_execute(query, false, 0);
+//
+//	if (rv != SPI_OK_SELECT)
+//		elog(ERROR, "could not select consumers");
+//
+//	slot = MakeSingleTupleTableSlot(SPI_tuptable->tupdesc);
+//
+//
+//	for (i = 0; i < SPI_processed; ++i)
+//	{
+//		ExecStoreTuple(SPI_tuptable->vals[i], slot, InvalidBuffer, false);
+//		d = slot_getattr(slot, 1, &isnull);
+//
+//		oid = DatumGetObjectId(d);
+//		lappend_oid(list, oid);
+//
+//		info = hash_search(consumer_info, &oid, HASH_FIND, &found);
+//		TerminateBackgroundWorker(&info->handle);
+//		hash_search(consumer_info, &oid, HASH_REMOVE, &found);
+//		delete_consumer(oid);
+//	}
+//
+//	SPI_finish();
+//
+//	drop_consumer_lock(lockrel);
+//	RETURN_SUCCESS();
+//}
