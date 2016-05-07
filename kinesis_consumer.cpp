@@ -20,6 +20,8 @@
 #include <aws/core/client/RetryStrategy.h>
 #include <aws/core/utils/logging/FormattedLogSystem.h>
 #include <aws/core/client/DefaultRetryStrategy.h>
+#include <aws/core/utils/logging/LogMacros.h>
+#include <aws/kinesis/model/DescribeStreamRequest.h>
 
 #include "kinesis_consumer.h"
 #include "conc_queue.hpp"
@@ -32,8 +34,6 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <sys/time.h>
-#include <aws/core/utils/logging/LogMacros.h>
-#include <aws/kinesis/model/DescribeStreamRequest.h>
 
 using namespace Aws::Auth;
 using namespace Aws::Client;
@@ -133,8 +133,9 @@ kinesis_client_create(const char *region,
 	config.retryStrategy = 
 		Aws::MakeShared<DefaultRetryStrategy>("kinesis_consumer", 5, 25);
 
-	// TODO - handle credentials file
+	// TODO - handle creds and url
 	(void) (credfile);
+	(void) (url);
 
 	KinesisClient *kc = new KinesisClient(config);
 	return (kinesis_client*)(kc);
@@ -271,7 +272,6 @@ consume_thread(kinesis_consumer *kc)
 	KinesisClient &client = *kc->client;
 
 	double last_request_time = 0.0;
-
 	GetRecordsRequest req;
 
 	while (kc->keep_running)
@@ -284,19 +284,13 @@ consume_thread(kinesis_consumer *kc)
 		last_request_time = get_time();
 		*new_rec_out = client.GetRecords(req);
 
-		double now = get_time();
-
 		if (new_rec_out->IsSuccess())
 		{
 			kc->shard_iter = new_rec_out->GetResult().GetNextShardIterator();
 			bool pushed = false;
 
-			int num_rec = kinesis_batch_get_size((kinesis_batch*) new_rec_out);
-
 			while (!pushed && kc->keep_running)
-			{
 				pushed = kc->queue->push_with_timeout(new_rec_out, 1000);
-			}
 		}
 		else
 		{
