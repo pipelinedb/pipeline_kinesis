@@ -5,7 +5,6 @@ PipelineDB extension for Amazon Kinesis support
 To run the program, you must first build and install the aws-cpp-sdk:
 
 ```
-```
 git clone https://github.com/aws/aws-sdk-cpp
 cd aws-sdk-cpp
 git checkout tags/0.10.9
@@ -47,26 +46,26 @@ create extension pipeline\_kinesis;
 Add an endpoint:
 
 ```
-select kinesis\_add\_endpoint('endpoint', 'us-west-2');
+select kinesis_add_endpoint('endpoint', 'us-west-2');
 ```
 
 Create a pipeline stream to insert into:
 
 ```
-CREATE STREAM foo\_stream (payload text);
-CREATE continuous view foo\_view as select payload, count(\*) from foo\_stream group by payload;
+CREATE STREAM foo_stream (payload text);
+CREATE continuous view foo_view as select payload, count(*) from foo_stream group by payload;
 ```
 
 Start ingestion:
 
 ```
-select kinesis\_consume\_begin\_sr('ep', 'test', 'foo\_stream');
+select kinesis_consume_begin_sr('ep', 'test', 'foo_stream');
 ```
 
 If all goes well, your view should have some data in it:
 
 ```
-pipeline=# select \* from foo\_view;
+pipeline=# select * from foo_view;
  payload | count 
 ---------+-------
  foo5    |    11
