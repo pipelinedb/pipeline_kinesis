@@ -218,7 +218,7 @@ get_copy_statement(const char *relname)
 	TupleDesc desc;
 	int i;
 
-	RangeVar *rv = makeRangeVar(NULL, (char*) relname, -1);
+	RangeVar *rv = makeRangeVar(NULL, (char *) relname, -1);
 
 	stmt->relation = rv;
 	stmt->filename = NULL;
@@ -610,7 +610,7 @@ kinesis_consume_main(Datum arg)
 				const uint8_t *d = kinesis_record_get_data(r);
 				const char *seq = kinesis_record_get_sequence_number(r);
 
-				appendBinaryStringInfo(batch_buffer, (const char*) d, n);
+				appendBinaryStringInfo(batch_buffer, (const char *) d, n);
 				appendStringInfoChar(batch_buffer, '\n');
 
 				resetStringInfo(shard->seqnum);
@@ -904,7 +904,7 @@ kinesis_consume_end_all(PG_FUNCTION_ARGS)
 
 	hash_seq_init(&iter, consumer_info);
 
-	while ((info = (KinesisConsumerInfo*) hash_seq_search(&iter)) != NULL)
+	while ((info = (KinesisConsumerInfo *) hash_seq_search(&iter)) != NULL)
 	{
 		TerminateBackgroundWorker(&info->handle);
 		ids = lappend_oid(ids, info->oid);
