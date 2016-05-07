@@ -48,6 +48,7 @@ struct kinesis_consumer
 	std::atomic<bool> keep_running;
 	std::thread *thread;
 	Aws::String shard_iter;
+	int batchsize;
 };
 
 void *logger_ctx = NULL;
@@ -89,6 +90,33 @@ kinesis_set_logger(void *ctx, void (*l) (void *ctx, const char *s))
 	Aws::Utils::Logging::InitializeAWSLogging(Aws::MakeShared<AltLogSystem>("logging", Aws::Utils::Logging::LogLevel::Info));
 }
 
+static int
+lookup_region(const char *r)
+{
+	if (strcmp(r, "us-east-1") == 0)
+		return (int) Aws::Region::US_EAST_1;
+	if (strcmp(r, "us-west-1") == 0)
+		return (int) Aws::Region::US_WEST_1;
+	if (strcmp(r, "us-west-2") == 0)
+		return (int) Aws::Region::US_WEST_2;
+	if (strcmp(r, "eu-west-1") == 0)
+		return (int) Aws::Region::EU_WEST_1;
+	if (strcmp(r, "eu-central-1") == 0)
+		return (int) Aws::Region::EU_CENTRAL_1;
+	if (strcmp(r, "ap-southeast-1") == 0)
+		return (int) Aws::Region::AP_SOUTHEAST_1;
+	if (strcmp(r, "ap-southeast-2") == 0)
+		return (int) Aws::Region::AP_SOUTHEAST_2;
+	if (strcmp(r, "ap-northeast-1") == 0)
+		return (int) Aws::Region::AP_NORTHEAST_1;
+	if (strcmp(r, "ap-northeast-2") == 0)
+		return (int) Aws::Region::AP_NORTHEAST_2;
+	if (strcmp(r, "sa-east-1") == 0)
+		return (int) Aws::Region::SA_EAST_1;
+
+	return -1;
+}
+
 kinesis_client * 
 kinesis_client_create(const char *region,
 					  const char *credfile,
@@ -96,11 +124,19 @@ kinesis_client_create(const char *region,
 {
 	ClientConfiguration config;
 
-	// XXX - unhardcode
-	config.region = Aws::Region::US_WEST_2;
-	config.retryStrategy = Aws::MakeShared<DefaultRetryStrategy>("kinesis_consumer", 5, 25);
-	KinesisClient *kc = new KinesisClient(config);
+	int r = lookup_region(region);
 
+	if (r == -1)
+		return NULL;
+
+	config.region = (Aws::Region) r;
+	config.retryStrategy = 
+		Aws::MakeShared<DefaultRetryStrategy>("kinesis_consumer", 5, 25);
+
+	// TODO - handle credentials file
+	(void) (credfile);
+
+	KinesisClient *kc = new KinesisClient(config);
 	return (kinesis_client*)(kc);
 }
 
@@ -167,7 +203,8 @@ kinesis_consumer*
 kinesis_consumer_create(kinesis_client *k, 
 		const char *stream, 
 		const char *shard,
-		const char *seqnum)
+		const char *seqnum,
+		int batchsize)
 {
 	KinesisClient *kc = (KinesisClient*)(k);
 	GetShardIteratorRequest request;
@@ -195,7 +232,7 @@ kinesis_consumer_create(kinesis_client *k,
 	Aws::String shard_iter = outcome.GetResult().GetShardIterator();
 
 	auto *cq = new concurrent_queue<GetRecordsOutcome*>(100);
-	return new kinesis_consumer{kc, cq, {true}, NULL, shard_iter};
+	return new kinesis_consumer{kc, cq, {true}, NULL, shard_iter, batchsize};
 }
 
 // create and start the consumer thread
@@ -240,7 +277,7 @@ consume_thread(kinesis_consumer *kc)
 	while (kc->keep_running)
 	{
 		req.SetShardIterator(kc->shard_iter);
-		req.SetLimit(1000);
+		req.SetLimit(kc->batchsize);
 
 		GetRecordsOutcome *new_rec_out = new GetRecordsOutcome();
 

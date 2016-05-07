@@ -1,12 +1,10 @@
-/* contrib/pipeline_kinesis/pipeline_kinesis--0.9.1.sql */
-
 -- complain if script is sourced in psql, rather than via CREATE EXTENSION
 \echo Use "CREATE EXTENSION pipeline_kinesis" to load this file. \quit
 
 CREATE TABLE pipeline_kinesis_endpoints (
 	name text PRIMARY KEY,
 	region text NOT NULL,
-	credfile text NOT NULL,
+	credfile text,
 	url text
 ) WITH OIDS;
 
@@ -55,9 +53,9 @@ AS 'MODULE_PATHNAME', 'kinesis_consume_begin_sr'
 LANGUAGE C VOLATILE;
 
 CREATE FUNCTION kinesis_consume_end_sr (
-  endpoint   text,
-  stream 	text,
-  relation     text
+	endpoint  text,
+	stream    text,
+	relation  text
 )
 RETURNS text
 AS 'MODULE_PATHNAME', 'kinesis_consume_end_sr'
@@ -66,4 +64,9 @@ LANGUAGE C VOLATILE;
 CREATE FUNCTION kinesis_consume_begin_all()
 RETURNS text
 AS 'MODULE_PATHNAME', 'kinesis_consume_begin_all'
+LANGUAGE C VOLATILE;
+
+CREATE FUNCTION kinesis_consume_end_all()
+RETURNS text
+AS 'MODULE_PATHNAME', 'kinesis_consume_end_all'
 LANGUAGE C VOLATILE;

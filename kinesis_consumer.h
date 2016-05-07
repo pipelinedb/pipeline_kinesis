@@ -46,7 +46,8 @@ void kinesis_set_logger(void *ctx, void (*l) (void *ctx, const char *s));
 kinesis_consumer * kinesis_consumer_create(kinesis_client *client,
 										   const char *stream,
 										   const char *shard,
-										   const char *seqnum);
+										   const char *seqnum,
+										   int batchsize);
 
 void kinesis_consumer_start(kinesis_consumer *k);
 void kinesis_consumer_stop(kinesis_consumer *k);
