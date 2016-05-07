@@ -27,7 +27,7 @@ kinesis_client * kinesis_client_create(const char *region,
 									   const char *credfile,
 									   const char *url);
 
-kinesis_stream_metadata* kinesis_client_create_stream_metadata(kinesis_client *client, const char *stream);
+kinesis_stream_metadata * kinesis_client_create_stream_metadata(kinesis_client *client, const char *stream);
 
 int kinesis_stream_metadata_get_num_shards(kinesis_stream_metadata *meta);
 

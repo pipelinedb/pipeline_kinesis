@@ -44,7 +44,7 @@ using namespace Aws::Utils;
 struct kinesis_consumer
 {
 	KinesisClient *client;
-	concurrent_queue<GetRecordsOutcome*> *queue;
+	concurrent_queue<GetRecordsOutcome *> *queue;
 	std::atomic<bool> keep_running;
 	std::thread *thread;
 	Aws::String shard_iter;
@@ -138,14 +138,14 @@ kinesis_client_create(const char *region,
 	(void) (url);
 
 	KinesisClient *kc = new KinesisClient(config);
-	return (kinesis_client*)(kc);
+	return (kinesis_client *)(kc);
 }
 
-kinesis_stream_metadata*
+kinesis_stream_metadata *
 kinesis_client_create_stream_metadata(kinesis_client *client, 
 		const char *stream)
 {
-	KinesisClient *kc = (KinesisClient*)(client);
+	KinesisClient *kc = (KinesisClient *)(client);
 
 	DescribeStreamRequest request;
 	request.SetStreamName(stream);
@@ -159,28 +159,28 @@ kinesis_client_create_stream_metadata(kinesis_client *client,
 		return NULL;
 	}
 
-	return (kinesis_stream_metadata*) out;
+	return (kinesis_stream_metadata *) out;
 }
 
 int 
 kinesis_stream_metadata_get_num_shards(kinesis_stream_metadata *meta)
 {
-	DescribeStreamOutcome *out = (DescribeStreamOutcome*)(meta);
+	DescribeStreamOutcome *out = (DescribeStreamOutcome *)(meta);
 	return out->GetResult().GetStreamDescription().GetShards().size();
 }
 
 const kinesis_shard_metadata *
 kinesis_stream_metadata_get_shard(kinesis_stream_metadata *meta, int i)
 {
-	DescribeStreamOutcome *out = (DescribeStreamOutcome*)(meta);
-	return (const kinesis_shard_metadata*) 
+	DescribeStreamOutcome *out = (DescribeStreamOutcome *)(meta);
+	return (const kinesis_shard_metadata *) 
 		&out->GetResult().GetStreamDescription().GetShards()[i];
 }
 
 const char * 
 kinesis_shard_metadata_get_id(const kinesis_shard_metadata *meta)
 {
-	Shard *shard = (Shard*)(meta);
+	Shard *shard = (Shard *)(meta);
 
 	return shard->GetShardId().c_str();
 }
@@ -188,7 +188,7 @@ kinesis_shard_metadata_get_id(const kinesis_shard_metadata *meta)
 void
 kinesis_client_destroy_stream_metadata(kinesis_stream_metadata *meta)
 {
-	delete (DescribeStreamOutcome*)(meta);
+	delete (DescribeStreamOutcome *)(meta);
 }
 
 void
@@ -200,14 +200,14 @@ kinesis_client_destroy(kinesis_client *client)
 // create the state for the consumer.
 // note - this is a blocking call wrt obtaining the shard iterator.
 // on error this returns NULL.
-kinesis_consumer*
+kinesis_consumer *
 kinesis_consumer_create(kinesis_client *k, 
 		const char *stream, 
 		const char *shard,
 		const char *seqnum,
 		int batchsize)
 {
-	KinesisClient *kc = (KinesisClient*)(k);
+	KinesisClient *kc = (KinesisClient *)(k);
 	GetShardIteratorRequest request;
 
 	request.SetStreamName(stream);
@@ -232,7 +232,7 @@ kinesis_consumer_create(kinesis_client *k,
 
 	Aws::String shard_iter = outcome.GetResult().GetShardIterator();
 
-	auto *cq = new concurrent_queue<GetRecordsOutcome*>(100);
+	auto *cq = new concurrent_queue<GetRecordsOutcome *>(100);
 	return new kinesis_consumer{kc, cq, {true}, NULL, shard_iter, batchsize};
 }
 
@@ -314,69 +314,69 @@ consume_thread(kinesis_consumer *kc)
 }
 
 // API for external consumer to pop a batch from the queue
-const kinesis_batch*
+const kinesis_batch *
 kinesis_consume(kinesis_consumer *kc, int timeout)
 {
 	GetRecordsOutcome *outcome = NULL;
 	bool popped = kc->queue->pop_with_timeout(outcome, timeout);
-	return popped ? (const kinesis_batch*) outcome : NULL;
+	return popped ? (const kinesis_batch *) outcome : NULL;
 }
 
 // C -> C++ API wrappers
 int64_t
 kinesis_batch_get_millis_behind_latest(const kinesis_batch *rb)
 {
-	return ((const GetRecordsOutcome*)rb)->GetResult().GetMillisBehindLatest();
+	return ((const GetRecordsOutcome *)rb)->GetResult().GetMillisBehindLatest();
 }
 
 int
 kinesis_batch_get_size(const kinesis_batch *rb)
 {
-	return ((const GetRecordsOutcome*)rb)->GetResult().GetRecords().size();
+	return ((const GetRecordsOutcome *)rb)->GetResult().GetRecords().size();
 }
 
-const kinesis_record*
+const kinesis_record *
 kinesis_batch_get_record(const kinesis_batch *rb, int i)
 {
-	auto o = (const GetRecordsOutcome*) rb;
+	auto o = (const GetRecordsOutcome *) rb;
 	auto r = &(o->GetResult().GetRecords()[i]);
 
-	return (const kinesis_record*) r;
+	return (const kinesis_record *) r;
 }
 
 void
 kinesis_batch_destroy(const kinesis_batch *rb)
 {
-	delete (const GetRecordsOutcome*)(rb);
+	delete (const GetRecordsOutcome *)(rb);
 }
 
-const char*
+const char *
 kinesis_record_get_sequence_number(const kinesis_record *rec)
 {
-	return ((Record*)rec)->GetSequenceNumber().c_str();
+	return ((Record *)rec)->GetSequenceNumber().c_str();
 }
 
-const char*
+const char *
 kinesis_record_get_partition_key(const kinesis_record *rec)
 {
-	return ((Record*)rec)->GetPartitionKey().c_str();
+	return ((Record *)rec)->GetPartitionKey().c_str();
 }
 
 double
 kinesis_record_get_arrival_time(const kinesis_record *rec)
 {
-	return ((Record*)rec)->GetApproximateArrivalTimestamp().ComputeCurrentTimestampInAmazonFormat();
+	return ((Record *)rec)->GetApproximateArrivalTimestamp().ComputeCurrentTimestampInAmazonFormat();
 }
 
 int
 kinesis_record_get_data_size(const kinesis_record *rec)
 {
-	return ((Record*)rec)->GetData().GetLength();
+	return ((Record *)rec)->GetData().GetLength();
 }
 
-const uint8_t*
+const uint8_t *
 kinesis_record_get_data(const kinesis_record *rec)
 {
-	return ((Record*)rec)->GetData().GetUnderlyingData();
+	return ((Record *)rec)->GetData().GetUnderlyingData();
 }
 
