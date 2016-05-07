@@ -52,7 +52,7 @@ struct kinesis_consumer
 };
 
 void *logger_ctx = NULL;
-void (*logger_fn) (void *ctx, const char *s) = 0;
+kinesis_log_fn logger_fn = NULL;
 
 // Override the default logging system to print to stderr
 class AltLogSystem : public Logging::FormattedLogSystem
@@ -67,7 +67,7 @@ class AltLogSystem : public Logging::FormattedLogSystem
 	virtual void ProcessFormattedStatement(Aws::String&& statement)
 	{
 		std::unique_lock<std::mutex> lock(mutex_);
-		logger_fn(logger_ctx, statement.c_str());
+		logger_fn(logger_ctx, statement.c_str(), statement.size());
 	}
 };
 
@@ -82,12 +82,14 @@ get_time()
 static void consume_thread(kinesis_consumer *kc);
 
 void
-kinesis_set_logger(void *ctx, void (*l) (void *ctx, const char *s))
+kinesis_set_logger(void *ctx, kinesis_log_fn fn)
 {
 	logger_ctx = ctx;
-	logger_fn = l;
+	logger_fn = fn;
 
-	Aws::Utils::Logging::InitializeAWSLogging(Aws::MakeShared<AltLogSystem>("logging", Aws::Utils::Logging::LogLevel::Info));
+	Aws::Utils::Logging::InitializeAWSLogging(
+			Aws::MakeShared<AltLogSystem>("logging", 
+				Aws::Utils::Logging::LogLevel::Info));
 }
 
 static int

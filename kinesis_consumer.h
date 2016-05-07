@@ -23,6 +23,8 @@ typedef struct kinesis_client kinesis_client;
 typedef struct kinesis_stream_metadata kinesis_stream_metadata;
 typedef struct kinesis_shard_metadata kinesis_shard_metadata;
 
+typedef void (*kinesis_log_fn) (void *ctx, const char *s, int len);
+
 kinesis_client * kinesis_client_create(const char *region,
 									   const char *credfile,
 									   const char *url);
@@ -41,7 +43,7 @@ void kinesis_client_destroy_stream_metadata(kinesis_stream_metadata *meta);
 
 void kinesis_client_destroy(kinesis_client *client);
 
-void kinesis_set_logger(void *ctx, void (*l) (void *ctx, const char *s));
+void kinesis_set_logger(void *ctx, kinesis_log_fn fn);
 
 kinesis_consumer * kinesis_consumer_create(kinesis_client *client,
 										   const char *stream,

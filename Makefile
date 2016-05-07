@@ -2,7 +2,7 @@ MODULE_big = pipeline_kinesis
 OBJS = pipeline_kinesis.o kinesis_consumer.o
 
 EXTENSION = pipeline_kinesis
-DATA = pipeline_kinesis--0.9.1.sql
+DATA = pipeline_kinesis--0.9.0.sql
 
 SHLIB_LINK = -laws-cpp-sdk-core \
 	-laws-cpp-sdk-kinesis \

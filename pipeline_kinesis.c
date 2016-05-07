@@ -184,17 +184,15 @@ kinesis_consume_main_sigterm(SIGNAL_ARGS)
 extern void kinesis_consume_main(Datum arg);
 
 static void
-log_fn(void *ctx, const char *s)
+log_fn(void *ctx, const char *s, int size)
 {
 	/* aws log messages have a newline on them, so only log n-1 */
 
 	/* Note - there is a mutex in the cpp caller protecting this */
 	/* it may be more appropriate to put the mutex on this side */
 
-	int n = strlen(s);
-
-	if (n > 0)
-		elog(LOG, "%.*s", n-1, s);
+	if (size > 0)
+		elog(LOG, "%.*s", size-1, s);
 }
 
 /*
@@ -207,13 +205,15 @@ log_fn(void *ctx, const char *s)
 static CopyStmt *
 get_copy_statement(const char *relname)
 {
+	text *rel_text = cstring_to_text(relname);
+
 	MemoryContext old = MemoryContextSwitchTo(CacheMemoryContext);
 	CopyStmt *stmt = makeNode(CopyStmt);
 	Relation rel;
 	TupleDesc desc;
 	int i;
 
-	RangeVar *rv = makeRangeVarFromNameList(textToQualifiedNameList(relname));
+	RangeVar *rv = makeRangeVarFromNameList(textToQualifiedNameList(rel_text));
 
 	stmt->relation = rv;
 	stmt->filename = NULL;
@@ -620,7 +620,23 @@ kinesis_consume_main(Datum arg)
 			continue;
 
 		StartTransactionCommand();
-		execute_copy(copy, batch_buffer);
+
+		PG_TRY();
+		{
+			execute_copy(copy, batch_buffer);
+		}
+		PG_CATCH();
+		{
+			elog(LOG, "failed to process batch");
+
+			EmitErrorReport();
+			FlushErrorState();
+			AbortCurrentTransaction();
+		}
+		PG_END_TRY();
+
+		if (!IsTransactionState())
+			StartTransactionCommand();
 
 		save_consumer_state(&state);
 		CommitTransactionCommand();
@@ -633,7 +649,6 @@ kinesis_consume_main(Datum arg)
 
 	kinesis_client_destroy(client);
 }
-
 
 /*
  * launch_worker
