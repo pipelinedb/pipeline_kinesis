@@ -438,8 +438,6 @@ load_shard_state(KinesisConsumerState *state, kinesis_stream_metadata *meta)
 
 		ExecStoreTuple(SPI_tuptable->vals[i], slot, InvalidBuffer, false);
 
-		print_slot(slot);
-
 		d = slot_getattr(slot, 2, &isnull);
 		shard_id = TextDatumGetCString(d);
 
