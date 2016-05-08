@@ -27,15 +27,15 @@ class concurrent_queue
 	{
 	}
 
-    bool empty() const
-    {
+	bool empty() const
+	{
 		std::unique_lock<std::mutex> lock(mutex_);
-        return queue_.empty();
-    }
+		return queue_.empty();
+	}
 
 	// push item onto the queue, wait up to ms if q full
 	bool push_with_timeout(Data const& data, int ms)
-    {
+	{
 		{
 			std::unique_lock<std::mutex> lock(mutex_);
 			auto timeout = std::chrono::milliseconds(ms);
@@ -51,13 +51,13 @@ class concurrent_queue
 			queue_.push(data);
 		}
 
-        cond_var_has_items.notify_one();
+		cond_var_has_items.notify_one();
 		return true;
-    }
+	}
 
 	// pop item onto the queue, wait up to ms for item if q empty
 	bool pop_with_timeout(Data& popped_value, int ms)
-    {
+	{
 		{
 			std::unique_lock<std::mutex> lock(mutex_);
 			auto timeout = std::chrono::milliseconds(ms);
@@ -76,11 +76,11 @@ class concurrent_queue
 
 		cond_var_has_space.notify_one();
 		return true;
-    }
+	}
 
   private:
-    std::queue<Data> queue_;
-    mutable std::mutex mutex_;
+	std::queue<Data> queue_;
+	mutable std::mutex mutex_;
 	std::condition_variable cond_var_has_items;
 	std::condition_variable cond_var_has_space;
 	size_t max_;
