@@ -40,6 +40,12 @@
 
 #define RETURN_SUCCESS() PG_RETURN_DATUM(CStringGetTextDatum("success"))
 
+#define OPTION_DELIMITER "delimiter"
+#define OPTION_FORMAT "format"
+#define FORMAT_CSV "csv"
+#define OPTION_QUOTE "quote"
+#define OPTION_ESCAPE "escape"
+
 PG_MODULE_MAGIC;
 
 extern void _PG_init(void);
@@ -78,6 +84,10 @@ typedef struct KinesisConsumerState
 	int batchsize;
 	int num_shards;
 	ShardState *shards;
+	char *format;
+	char *delimiter;
+	char *quote;
+	char *escape;
 } KinesisConsumerState;
 
 void
@@ -199,15 +209,13 @@ log_fn(void *ctx, const char *s, int size)
  * get_copy_statement
  *
  * Get the COPY statement that will be used to write messages to a stream
- *
- * TODO - support copy formatting options
  */
 static CopyStmt *
-get_copy_statement(const char *relname)
+get_copy_statement(KinesisConsumerState *state)
 {
-	text *rel_text = cstring_to_text(relname);
-
+	text *rel_text = cstring_to_text(state->relation);
 	MemoryContext old = MemoryContextSwitchTo(CacheMemoryContext);
+	DefElem *format = makeNode(DefElem);
 	CopyStmt *stmt = makeNode(CopyStmt);
 	Relation rel;
 	TupleDesc desc;
@@ -236,6 +244,34 @@ get_copy_statement(const char *relname)
 					ARRIVAL_TIMESTAMP) == 0)
 			continue;
 		stmt->attlist = lappend(stmt->attlist, makeString(name));
+	}
+
+	if (state->delimiter)
+	{
+		DefElem *delim = makeNode(DefElem);
+		delim->defname = OPTION_DELIMITER;
+		delim->arg = (Node *) makeString(state->delimiter);
+		stmt->options = lappend(stmt->options, delim);
+	}
+
+	format->defname = OPTION_FORMAT;
+	format->arg = (Node *) makeString(state->format);
+	stmt->options = lappend(stmt->options, format);
+
+	if (state->quote)
+	{
+		DefElem *quote = makeNode(DefElem);
+		quote->defname = OPTION_QUOTE;
+		quote->arg = (Node *) makeString(state->quote);
+		stmt->options = lappend(stmt->options, quote);
+	}
+
+	if (state->escape)
+	{
+		DefElem *escape = makeNode(DefElem);
+		escape->defname = OPTION_ESCAPE;
+		escape->arg = (Node *) makeString(state->escape);
+		stmt->options = lappend(stmt->options, escape);
 	}
 
 	heap_close(rel, NoLock);
@@ -298,7 +334,9 @@ load_consumer_state(KinesisConsumerState *state, Oid oid)
 	TupleTableSlot *slot;
 	int rv;
 
-	const char *query = "SELECT e.*, c.* FROM pipeline_kinesis.consumers c "
+	const char *query = "SELECT e.name, e.region, e.credfile, e.url, "
+		"c.endpoint, c.stream, c.relation, c.format, c.delimiter, c.quote, "
+		"c.escape, c.batchsize FROM pipeline_kinesis.consumers c "
 		"INNER JOIN pipeline_kinesis.endpoints e ON c.endpoint = e.name "
 		"WHERE c.oid = $1;";
 
@@ -343,13 +381,18 @@ load_consumer_state(KinesisConsumerState *state, Oid oid)
 	if (!isnull)
 		state->endpoint_url = TextDatumGetCString(d);
 
-	state->kinesis_stream =
-		TextDatumGetCString(slot_getattr(slot, 6, &isnull));
+	state->kinesis_stream = TextDatumGetCString(slot_getattr(slot, 6, &isnull));
+	state->relation = TextDatumGetCString(slot_getattr(slot, 7, &isnull));
+	state->format = TextDatumGetCString(slot_getattr(slot, 8, &isnull));
+	state->delimiter = TextDatumGetCString(slot_getattr(slot, 9, &isnull));
 
-	state->relation =
-		TextDatumGetCString(slot_getattr(slot, 7, &isnull));
+	d = slot_getattr(slot, 10, &isnull);
+	state->quote = isnull ? NULL : TextDatumGetCString(d);
 
-	state->batchsize = DatumGetInt32(slot_getattr(slot, 8, &isnull));
+	d = slot_getattr(slot, 11, &isnull);
+	state->escape = isnull ? NULL : TextDatumGetCString(d);
+
+	state->batchsize = DatumGetInt32(slot_getattr(slot, 12, &isnull));
 
 	MemoryContextSwitchTo(old);
 
@@ -537,7 +580,7 @@ kinesis_consume_main(Datum arg)
 	StartTransactionCommand();
 	load_consumer_state(&state, oid);
 
-	copy = get_copy_statement(state.relation);
+	copy = get_copy_statement(&state);
 
 	kinesis_set_logger(NULL, log_fn);
 
@@ -726,22 +769,24 @@ Datum
 kinesis_consume_begin_sr(PG_FUNCTION_ARGS)
 {
 	const char *query = "INSERT INTO pipeline_kinesis.consumers VALUES "
-		"($1, $2, $3, $4) ON CONFLICT(endpoint, stream, relation) "
-		"DO UPDATE SET (batchsize) = ($4) RETURNING oid;";
+		"($1, $2, $3, $4, $5, $6, $7, $8) "
+		"ON CONFLICT(endpoint, stream, relation) "
+		"DO UPDATE SET (batchsize) = ($8) RETURNING oid;";
 
 	Relation lockrel;
 	int rv;
 
-    Oid argtypes[5] = { TEXTOID, TEXTOID, TEXTOID, INT4OID, INT4OID };
-	Datum values[5];
-    char nulls[5];
+    Oid argtypes[8] = { TEXTOID, TEXTOID, TEXTOID, TEXTOID, TEXTOID, TEXTOID, TEXTOID, INT4OID };
+	Datum values[8];
+    char nulls[8];
 
 	TupleTableSlot *slot;
 	bool isnull = false;
 	Datum d;
 	Oid oid;
+	int i;
 
-	MemSet(nulls, 0, sizeof(nulls));
+	MemSet(nulls, ' ', sizeof(nulls));
 
 	lockrel = acquire_consumer_lock();
 
@@ -752,18 +797,31 @@ kinesis_consume_begin_sr(PG_FUNCTION_ARGS)
 	if (PG_ARGISNULL(2))
 		elog(ERROR, "relation cannot be null");
 
+	/* endpoint */
 	values[0] = PG_GETARG_DATUM(0);
+	/* Kinesis source stream */
 	values[1] = PG_GETARG_DATUM(1);
+	/* PipelineDB destination stream */
 	values[2] = PG_GETARG_DATUM(2);
 
-	if (PG_ARGISNULL(3))
-		values[3] = Int32GetDatum(1000);
+	/* format, delimiter, quote, escape */
+	for (i = 3; i < 7; i++)
+	{
+		if (PG_ARGISNULL(i))
+			nulls[i] = 'n';
+		else
+			values[i] = PG_GETARG_DATUM(i);
+	}
+
+	/* batch size */
+	if (PG_ARGISNULL(7))
+		values[7] = Int32GetDatum(1000);
 	else
-		values[3] = PG_GETARG_DATUM(3);
+		values[7] = PG_GETARG_DATUM(7);
 
 	SPI_connect();
 
-	rv = SPI_execute_with_args(query, 4, argtypes, values, nulls, false, 1);
+	rv = SPI_execute_with_args(query, 8, argtypes, values, nulls, false, 1);
 
 	if (rv != SPI_OK_INSERT_RETURNING)
 		elog(ERROR, "could not create consumer %d", rv);
