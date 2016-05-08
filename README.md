@@ -2,8 +2,6 @@
 
 PipelineDB extension for Amazon Kinesis support
 
-At present, this consists of a C wrapper for the aws-cpp-sdk, and a test driver program.
-
 To run the program, you must first build and install the aws-cpp-sdk:
 
 ```
@@ -16,48 +14,65 @@ cd build
 cmake -DBUILD_ONLY=aws-cpp-sdk-kinesis -DCMAKE_BUILD_TYPE=Debug ../
 make VERBOSE=1
 sudo make install
+cd /usr/lib
+sudo ln -s /usr/local/lib/linux/intel64/Debug/libaws-cpp-sdk-core.so
+sudo ln -s /usr/local/lib/linux/intel64/Debug/libaws-cpp-sdk-kinesis.so 
 ```
 
-On ubuntu you may need to add the aws lib path to /etc/ld.so.conf.d:
-```
-echo /usr/local/lib/linux/intel64/Debug | sudo tee /etc/ld.so.conf.d/aws.conf
-sudo ldconfig
-```
-
-Once that succeeds, you can build the test program ```pipeline_kinesis```:
+Once that succeeds, you can build the kinesis extension.
 
 ```
-make
+make install
 ```
 
-The test program expects a kinesis stream called test, with one shard.
-
-To create the stream:
+To test the extension, first create a kinesis stream:
 
 ```
-aws kinesis create-stream --stream-name test --shard-count 1
+aws kinesis create-stream --stream-name test --shard-count 4
 ```
 
 To populate the stream:
 
 ```
-for i in $(seq 1 10); do aws kinesis put-record --stream-name test --data foo$i --partition-key foo$i; done
+for i in $(seq 1 100); do aws kinesis put-record --stream-name test --data foo$i --partition-key foo$i; done
 ```
 
-To run the consumer:
+To load the extension:
 
 ```
-./pipeline_kinesis
+create extension pipeline_kinesis;
 ```
 
-If all goes well, you should see something like this:
+Add an endpoint:
 
 ```
-1462215167.201261 request time 0.181243
-1462215167.201310 producer pushed 41
-1462215167.201323 consumer got 41 behind 0
-1462215167.201356 rec pkey foo1 data foo1 seq 49561592855568525463209091806505879893624243491426009090
-1462215167.201377 rec pkey foo2 data foo2 seq 49561592855568525463209091806507088819443858120600715266
-1462215167.201391 rec pkey foo3 data foo3 seq 49561592855568525463209091806508297745263472887214374914
-...
+select pipeline_kinesis.add_endpoint('endpoint', 'us-west-2');
+```
+
+Create a pipeline stream to insert into:
+
+```
+CREATE STREAM foo_stream (payload text);
+CREATE continuous view foo_view as select payload, count(*) from foo_stream group by payload;
+```
+
+Start ingestion:
+
+```
+select pipeline_kinesis.consume_begin_sr('ep', 'test', 'foo_stream');
+```
+
+If all goes well, your view should have some data in it:
+
+```
+pipeline=# select * from foo_view;
+ payload | count 
+---------+-------
+ foo5    |    11
+ foo3    |    11
+ foo2    |    11
+ foo7    |    11
+ foo9    |    11
+ foo10   |    11
+ ...
 ```

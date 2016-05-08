@@ -1,0 +1,6 @@
+# PipelineDB extension for Kinesis support
+comment = 'PipelineDB extension for Kinesis support'
+default_version = '0.9.0'
+module_pathname = '$libdir/pipeline_kinesis'
+relocatable = false
+schema = pipeline_kinesis

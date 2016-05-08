@@ -19,8 +19,37 @@ extern "C" {
 typedef struct kinesis_consumer kinesis_consumer;
 typedef struct kinesis_batch kinesis_batch;
 typedef struct kinesis_record kinesis_record;
+typedef struct kinesis_client kinesis_client;
+typedef struct kinesis_stream_metadata kinesis_stream_metadata;
+typedef struct kinesis_shard_metadata kinesis_shard_metadata;
 
-kinesis_consumer * kinesis_consumer_create();
+typedef void (*kinesis_log_fn) (void *ctx, const char *s, int len);
+
+kinesis_client * kinesis_client_create(const char *region,
+									   const char *credfile,
+									   const char *url);
+
+kinesis_stream_metadata * kinesis_client_create_stream_metadata(kinesis_client *client, const char *stream);
+
+int kinesis_stream_metadata_get_num_shards(kinesis_stream_metadata *meta);
+
+const kinesis_shard_metadata *
+kinesis_stream_metadata_get_shard(kinesis_stream_metadata *meta, int i);
+
+const char *
+kinesis_shard_metadata_get_id(const kinesis_shard_metadata *meta);
+
+void kinesis_client_destroy_stream_metadata(kinesis_stream_metadata *meta);
+
+void kinesis_client_destroy(kinesis_client *client);
+
+void kinesis_set_logger(void *ctx, kinesis_log_fn fn);
+
+kinesis_consumer * kinesis_consumer_create(kinesis_client *client,
+										   const char *stream,
+										   const char *shard,
+										   const char *seqnum,
+										   int batchsize);
 
 void kinesis_consumer_start(kinesis_consumer *k);
 void kinesis_consumer_stop(kinesis_consumer *k);
