@@ -121,7 +121,7 @@ kinesis_add_endpoint(PG_FUNCTION_ARGS)
 	Datum values[4];
     char nulls[4];
 
-	MemSet(nulls, 0, sizeof(nulls));
+	MemSet(nulls, ' ', sizeof(nulls));
 
 	values[0] = PG_GETARG_DATUM(0);
 	values[1] = PG_GETARG_DATUM(1);
@@ -159,7 +159,7 @@ kinesis_remove_endpoint(PG_FUNCTION_ARGS)
 	Datum values[1];
     char nulls[1];
 
-	MemSet(nulls, 0, sizeof(nulls));
+	MemSet(nulls, ' ', sizeof(nulls));
 
 	if (PG_ARGISNULL(0))
 		elog(ERROR, "endpoint cannot be null");
@@ -350,7 +350,7 @@ load_consumer_state(KinesisConsumerState *state, Oid oid)
 
 	MemSet(state, 0, sizeof(KinesisConsumerState));
 
-	MemSet(nulls, 0, sizeof(nulls));
+	MemSet(nulls, ' ', sizeof(nulls));
 	values[0] = ObjectIdGetDatum(oid);
 
 	SPI_connect();
@@ -458,7 +458,7 @@ load_shard_state(KinesisConsumerState *state, kinesis_stream_metadata *meta)
 
 	MemoryContextSwitchTo(old);
 
-	MemSet(nulls, 0, sizeof(nulls));
+	MemSet(nulls, ' ', sizeof(nulls));
 	values[0] = ObjectIdGetDatum(state->id);
 
 	SPI_connect();
@@ -518,7 +518,7 @@ save_consumer_state(KinesisConsumerState *state)
     char nulls[3];
 	SPIPlanPtr ptr;
 
-	MemSet(nulls, 0, sizeof(nulls));
+	MemSet(nulls, ' ', sizeof(nulls));
 
 	SPI_connect();
 
@@ -864,7 +864,7 @@ find_consumer(Datum endpoint, Datum stream, Datum relation)
 	values[1] = stream;
 	values[2] = relation;
 
-	MemSet(nulls, 0, sizeof(nulls));
+	MemSet(nulls, ' ', sizeof(nulls));
 
 	rv = SPI_execute_with_args(query, 4, argtypes, values, nulls, false, 1);
 
