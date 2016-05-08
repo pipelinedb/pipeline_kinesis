@@ -46,7 +46,7 @@ create extension pipeline_kinesis;
 Add an endpoint:
 
 ```
-select kinesis_add_endpoint('endpoint', 'us-west-2');
+select pipeline_kinesis.add_endpoint('endpoint', 'us-west-2');
 ```
 
 Create a pipeline stream to insert into:
@@ -59,7 +59,7 @@ CREATE continuous view foo_view as select payload, count(*) from foo_stream grou
 Start ingestion:
 
 ```
-select kinesis_consume_begin_sr('ep', 'test', 'foo_stream');
+select pipeline_kinesis.consume_begin_sr('ep', 'test', 'foo_stream');
 ```
 
 If all goes well, your view should have some data in it:
