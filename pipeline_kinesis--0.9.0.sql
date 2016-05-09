@@ -13,6 +13,10 @@ CREATE TABLE pipeline_kinesis.consumers (
   endpoint text references pipeline_kinesis.endpoints(name),
   stream text NOT NULL,
   relation text NOT NULL,
+  format text    NOT NULL,
+  delimiter text,
+  quote text,
+  escape text,
   batchsize integer NOT NULL,
   PRIMARY KEY(endpoint, stream, relation)
 ) WITH OIDS;
@@ -41,10 +45,14 @@ RETURNS text
 AS 'MODULE_PATHNAME', 'kinesis_remove_endpoint'
 LANGUAGE C VOLATILE;
 
-CREATE FUNCTION pipeline_kinesis.consume_begin_sr (
+CREATE FUNCTION pipeline_kinesis.consume_begin (
   endpoint text,
   stream text,
   relation text,
+  format text DEFAULT 'text',
+  delimiter text DEFAULT E'\t',
+  quote text DEFAULT NULL,
+  escape text DEFAULT NULL,
   batchsize integer DEFAULT 1000,
   start_seq text DEFAULT NULL
 )
@@ -52,7 +60,7 @@ RETURNS text
 AS 'MODULE_PATHNAME', 'kinesis_consume_begin_sr'
 LANGUAGE C VOLATILE;
 
-CREATE FUNCTION pipeline_kinesis.consume_end_sr (
+CREATE FUNCTION pipeline_kinesis.consume_end (
   endpoint text,
   stream text,
   relation text
