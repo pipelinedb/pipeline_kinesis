@@ -646,7 +646,7 @@ kinesis_consume_main(Datum arg)
 	load_consumer_state(&state, id);
 	copy = get_copy_statement(&state);
 
-	kinesis_set_logger(NULL, log_fn);
+	kinesis_set_logger(NULL, log_fn, "warn");
 
 	client = kinesis_client_create(state.endpoint_region,
 			state.endpoint_credfile,

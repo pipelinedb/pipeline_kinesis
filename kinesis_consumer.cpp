@@ -82,15 +82,43 @@ get_time()
 
 static void consume_thread(kinesis_consumer *kc);
 
+static Aws::Utils::Logging::LogLevel
+parse_level(const char *level)
+{
+	if (strcmp("off", level) == 0)
+		return Aws::Utils::Logging::LogLevel::Off;
+
+	if (strcmp("fatal", level) == 0)
+		return Aws::Utils::Logging::LogLevel::Fatal;
+
+	if (strcmp("error", level) == 0)
+		return Aws::Utils::Logging::LogLevel::Error;
+
+	if (strcmp("warn", level) == 0)
+		return Aws::Utils::Logging::LogLevel::Warn;
+
+	if (strcmp("info", level) == 0)
+		return Aws::Utils::Logging::LogLevel::Info;
+
+	if (strcmp("debug", level) == 0)
+		return Aws::Utils::Logging::LogLevel::Debug;
+
+	if (strcmp("trace", level) == 0)
+		return Aws::Utils::Logging::LogLevel::Trace;
+
+	// default to off
+
+	return Aws::Utils::Logging::LogLevel::Off;
+}
+
 void
-kinesis_set_logger(void *ctx, kinesis_log_fn fn)
+kinesis_set_logger(void *ctx, kinesis_log_fn fn, const char *level)
 {
 	logger_ctx = ctx;
 	logger_fn = fn;
 
 	Aws::Utils::Logging::InitializeAWSLogging(
-			Aws::MakeShared<AltLogSystem>("logging", 
-				Aws::Utils::Logging::LogLevel::Info));
+			Aws::MakeShared<AltLogSystem>("logging", parse_level(level)));
 }
 
 static int
@@ -315,6 +343,7 @@ consume_thread(kinesis_consumer *kc)
 
 	double last_request_time = 0.0;
 	GetRecordsRequest req;
+	int throttle = 0;
 
 	while (kc->keep_running)
 	{
@@ -333,19 +362,43 @@ consume_thread(kinesis_consumer *kc)
 
 			while (!pushed && kc->keep_running)
 				pushed = kc->queue->push_with_timeout(new_rec_out, 1000);
+
+			throttle = 0;
 		}
 		else
 		{
-			// unsuccessful request
+			auto &err = new_rec_out->GetError();
+
+			if (err.GetErrorType() == 
+					Aws::Kinesis::KinesisErrors::PROVISIONED_THROUGHPUT_EXCEEDED)
+			{
+				throttle++;
+			}
+			else
+			{
+				AWS_LOG_WARN("kinesis_consumer", "unrecoverable error %s %d", 
+						err.GetMessage().c_str());
+				break;
+			}
 		}
 
 		// Throttling logic
 		if (kc->keep_running)
 		{
-			double time_now = get_time();
-			double delta = time_now - last_request_time;
+			double sleep_time = 0.0;
 
-			double sleep_time = 0.25 - delta;
+			if (!throttle)
+			{
+				// default behaviour try to stay at 4 reqs/sec
+				double time_now = get_time();
+				double delta = time_now - last_request_time;
+				sleep_time = 0.25 - delta;
+			}
+			else
+			{
+				// linear backoff up to 5 secs
+				sleep_time = std::min(throttle * 1.0, 5.0);
+			}
 
 			if (sleep_time > 0.0)
 				usleep(sleep_time * 1000000.0);
