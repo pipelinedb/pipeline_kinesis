@@ -33,7 +33,7 @@ CREATE TABLE pipeline_kinesis.seqnums (
 CREATE FUNCTION pipeline_kinesis.add_endpoint (
   name text,
   region text,
-  credfile text,
+  credfile text DEFAULT NULL,
   url text DEFAULT NULL
 )
 RETURNS text

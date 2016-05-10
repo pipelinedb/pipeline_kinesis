@@ -35,6 +35,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <sys/time.h>
+#include <fstream>
 
 using namespace Aws::Auth;
 using namespace Aws::Client;
@@ -164,9 +165,11 @@ kinesis_client_create(const char *region,
 	config.retryStrategy = 
 		Aws::MakeShared<DefaultRetryStrategy>("kinesis_consumer", 5, 25);
 
-	// TODO - handle creds and url
-	(void) (credfile);
-	(void) (url);
+	if (credfile)
+		setenv("AWS_SHARED_CREDENTIALS_FILE", credfile, 1);
+
+	if (url)
+		config.endpointOverride = url;
 
 	KinesisClient *kc = new KinesisClient(config);
 	return (kinesis_client *)(kc);
