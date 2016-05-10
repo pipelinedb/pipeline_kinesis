@@ -35,7 +35,6 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <sys/time.h>
-#include <fstream>
 
 using namespace Aws::Auth;
 using namespace Aws::Client;
