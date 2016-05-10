@@ -132,7 +132,11 @@ kinesis_add_endpoint(PG_FUNCTION_ARGS)
 
 	values[0] = PG_GETARG_DATUM(0);
 	values[1] = PG_GETARG_DATUM(1);
-	values[2] = PG_GETARG_DATUM(2);
+
+	if (PG_ARGISNULL(2))
+		nulls[2] = 'n';
+	else
+		values[2] = PG_GETARG_DATUM(2);
 
 	if (PG_ARGISNULL(3))
 		nulls[3] = 'n';
@@ -376,15 +380,17 @@ load_consumer_state(KinesisConsumerState *state, int id)
 	state->endpoint_region =
 		TextDatumGetCString(slot_getattr(slot, 2, &isnull));
 
-	d = slot_getattr(slot, 5, &isnull);
+	d = slot_getattr(slot, 3, &isnull);
 
 	if (!isnull)
 		state->endpoint_credfile = TextDatumGetCString(d);
 
-	d = slot_getattr(slot, 5, &isnull);
+	d = slot_getattr(slot, 4, &isnull);
 
 	if (!isnull)
 		state->endpoint_url = TextDatumGetCString(d);
+
+	/* skip 5 == endpoint name */
 
 	state->kinesis_stream = TextDatumGetCString(slot_getattr(slot, 6, &isnull));
 	state->relation = TextDatumGetCString(slot_getattr(slot, 7, &isnull));

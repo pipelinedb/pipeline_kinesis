@@ -23,6 +23,7 @@
 #include <aws/core/utils/logging/LogMacros.h>
 #include <aws/kinesis/model/DescribeStreamRequest.h>
 #include <aws/core/utils/StringUtils.h>
+#include <aws/core/http/Scheme.h>
 
 #include "kinesis_consumer.h"
 #include "conc_queue.hpp"
@@ -148,6 +149,28 @@ lookup_region(const char *r)
 	return -1;
 }
 
+static void
+parse_url(ClientConfiguration &config,
+		  const char *url)
+{
+	const char *iter = url;
+	const char *tok = iter;
+
+	while (*iter && *iter != ':') ++iter;
+
+	Aws::String scheme(tok, iter);
+
+	while (*iter && (*iter == ':' || *iter == '/')) ++iter;
+	tok = iter;
+
+	while (*iter) ++iter;
+
+	Aws::String rest(tok, iter);
+
+	config.scheme = Aws::Http::SchemeMapper::FromString(scheme.c_str());
+	config.endpointOverride = rest;
+}
+
 kinesis_client * 
 kinesis_client_create(const char *region,
 					  const char *credfile,
@@ -164,9 +187,11 @@ kinesis_client_create(const char *region,
 	config.retryStrategy = 
 		Aws::MakeShared<DefaultRetryStrategy>("kinesis_consumer", 5, 25);
 
-	// TODO - handle creds and url
-	(void) (credfile);
-	(void) (url);
+	if (credfile)
+		setenv("AWS_SHARED_CREDENTIALS_FILE", credfile, 1);
+
+	if (url)
+		parse_url(config, url);
 
 	KinesisClient *kc = new KinesisClient(config);
 	return (kinesis_client *)(kc);
