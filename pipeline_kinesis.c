@@ -49,17 +49,22 @@
 PG_MODULE_MAGIC;
 
 extern void _PG_init(void);
-
 HTAB *consumer_info;
+
+#define MAX_PROCS 8
 
 /*
  * Shared state - used for starting / terminating workers
  */
 typedef struct KinesisConsumerInfo
 {
-	Oid oid;
+	int id;
 	Oid dboid;
-	BackgroundWorkerHandle handle;
+
+	int start_seq;
+	int num_procs;
+
+	BackgroundWorkerHandle handle[MAX_PROCS];
 } KinesisConsumerInfo;
 
 /*
@@ -74,7 +79,9 @@ typedef struct ShardState
 
 typedef struct KinesisConsumerState
 {
-	Oid id;
+	int consumer_id;
+	int proc_id;
+	int num_procs;
 	char *endpoint_name;
 	char *endpoint_region;
 	char *endpoint_credfile;
@@ -97,7 +104,7 @@ _PG_init(void)
 
 	MemSet(&ctl, 0, sizeof(HASHCTL));
 
-	ctl.keysize = sizeof(Oid);
+	ctl.keysize = sizeof(int);
 	ctl.entrysize = sizeof(KinesisConsumerInfo);
 	ctl.hash = oid_hash;
 
@@ -329,7 +336,7 @@ execute_copy(CopyStmt *stmt, StringInfo buf)
  * tables
  */
 static void
-load_consumer_state(KinesisConsumerState *state, Oid oid)
+load_consumer_state(KinesisConsumerState *state, int id)
 {
 	TupleTableSlot *slot;
 	int rv;
@@ -338,9 +345,9 @@ load_consumer_state(KinesisConsumerState *state, Oid oid)
 		"c.endpoint, c.stream, c.relation, c.format, c.delimiter, c.quote, "
 		"c.escape, c.batchsize FROM pipeline_kinesis.consumers c "
 		"INNER JOIN pipeline_kinesis.endpoints e ON c.endpoint = e.name "
-		"WHERE c.oid = $1;";
+		"WHERE c.id = $1;";
 
-	Oid argtypes[1] = { OIDOID };
+	Oid argtypes[1] = { INT4OID };
 	Datum values[1];
 	char nulls[1];
 
@@ -348,24 +355,22 @@ load_consumer_state(KinesisConsumerState *state, Oid oid)
 	bool isnull = false;
 	MemoryContext old;
 
-	MemSet(state, 0, sizeof(KinesisConsumerState));
-
 	MemSet(nulls, ' ', sizeof(nulls));
-	values[0] = ObjectIdGetDatum(oid);
+	values[0] = Int32GetDatum(id);
 
 	SPI_connect();
 
 	rv = SPI_execute_with_args(query, 1, argtypes, values, nulls, false, 1);
 
 	if (rv != SPI_OK_SELECT)
-		elog(ERROR, "could not load consumer state %d", oid);
+		elog(ERROR, "could not load consumer state %d", id);
 
 	slot = MakeSingleTupleTableSlot(SPI_tuptable->tupdesc);
 	ExecStoreTuple(SPI_tuptable->vals[0], slot, InvalidBuffer, false);
 
 	old = MemoryContextSwitchTo(CacheMemoryContext);
 
-	state->id = oid;
+	state->consumer_id = id;
 	state->endpoint_name =
 		TextDatumGetCString(slot_getattr(slot, 1, &isnull));
 	state->endpoint_region =
@@ -405,22 +410,38 @@ load_consumer_state(KinesisConsumerState *state, Oid oid)
  * Locate the index of a particular shard inside the stream metadata
  */
 static int
-find_shard_id(kinesis_stream_metadata *meta, const char *id)
+find_shard_id(KinesisConsumerState *state, const char *id)
 {
 	int i = 0;
-	int num_shards = kinesis_stream_metadata_get_num_shards(meta);
+	int num_shards = state->num_shards;
 
 	for (i = 0; i < num_shards; ++i)
 	{
-		const kinesis_shard_metadata *smeta =
-			kinesis_stream_metadata_get_shard(meta, i);
-		const char *sid = kinesis_shard_metadata_get_id(smeta);
-
-		if (strcmp(sid, id) == 0)
+		if (strcmp(state->shards[i].id, id) == 0)
 			return i;
 	}
 
 	return -1;
+}
+
+
+/*
+ * count_shards
+ *
+ * Determine how many shards this worker handles
+ */
+static int
+count_shards(int num_shards, int p, int id)
+{
+	int s = 0;
+	int i = 0;
+
+	for (i = 0; i < num_shards; ++i)
+	{
+		s += (i % p) == id;
+	}
+
+	return s;
 }
 
 /*
@@ -437,29 +458,37 @@ load_shard_state(KinesisConsumerState *state, kinesis_stream_metadata *meta)
 
 	int num_shards = kinesis_stream_metadata_get_num_shards(meta);
 	int i = 0;
-	Oid argtypes[1] = { OIDOID };
+	Oid argtypes[1] = { INT4OID };
 	Datum values[1];
     char nulls[1];
 	int rv = 0;
 	TupleTableSlot *slot = NULL;
+	int out_i = 0;
 
 	MemoryContext old = MemoryContextSwitchTo(CacheMemoryContext);
-	state->num_shards = num_shards;
-	state->shards = palloc0(num_shards * sizeof(ShardState));
+
+	state->num_shards = count_shards(num_shards, state->num_procs, state->proc_id);
+	state->shards = palloc0(state->num_shards * sizeof(ShardState));
 
 	for (i = 0; i < num_shards; ++i)
 	{
-		const kinesis_shard_metadata *smeta =
-			kinesis_stream_metadata_get_shard(meta, i);
+		const kinesis_shard_metadata *smeta;
 
-		state->shards[i].seqnum = makeStringInfo();
-		state->shards[i].id = pstrdup(kinesis_shard_metadata_get_id(smeta));
+		if ((i % state->num_procs) != state->proc_id)
+			continue;
+
+		smeta = kinesis_stream_metadata_get_shard(meta, i);
+
+		state->shards[out_i].seqnum = makeStringInfo();
+		state->shards[out_i].id = pstrdup(kinesis_shard_metadata_get_id(smeta));
+
+		out_i++;
 	}
 
 	MemoryContextSwitchTo(old);
 
 	MemSet(nulls, ' ', sizeof(nulls));
-	values[0] = ObjectIdGetDatum(state->id);
+	values[0] = Int32GetDatum(state->consumer_id);
 
 	SPI_connect();
 
@@ -484,7 +513,7 @@ load_shard_state(KinesisConsumerState *state, kinesis_stream_metadata *meta)
 		d = slot_getattr(slot, 2, &isnull);
 		shard_id = TextDatumGetCString(d);
 
-		out_ind = find_shard_id(meta, shard_id);
+		out_ind = find_shard_id(state, shard_id);
 
 		if (out_ind == -1)
 			continue;
@@ -513,7 +542,8 @@ save_consumer_state(KinesisConsumerState *state)
 		"($1, $2, $3) ON CONFLICT(consumer_id, shard_id) "
 		"DO UPDATE SET (seqnum) = ($3);";
 
-	Oid argtypes[3] = { OIDOID, TEXTOID, TEXTOID };
+	Oid argtypes[3] = { INT4OID, TEXTOID, TEXTOID };
+
 	Datum values[3];
     char nulls[3];
 	SPIPlanPtr ptr;
@@ -528,7 +558,11 @@ save_consumer_state(KinesisConsumerState *state)
 	for (i = 0; i < state->num_shards; ++i)
 	{
 		int rv = 0;
-		values[0] = ObjectIdGetDatum(state->id);
+
+		if (i % state->num_procs != state->proc_id)
+			continue;
+
+		values[0] = Int32GetDatum(state->consumer_id);
 		values[1] = CStringGetTextDatum(state->shards[i].id);
 		values[2] = CStringGetTextDatum(state->shards[i].seqnum->data);
 
@@ -539,6 +573,26 @@ save_consumer_state(KinesisConsumerState *state)
 	}
 
 	SPI_finish();
+}
+
+static void
+formatSeqnum(StringInfo out, StringInfo in, int offset)
+{
+	resetStringInfo(out);
+
+	if (in->len != 0)
+	{
+		appendStringInfoString(out, "after_sequence_number:");
+		appendBinaryStringInfo(out, in->data, in->len);
+	}
+	else if (offset == -2)
+	{
+		appendStringInfoString(out, "trim_horizon");
+	}
+	else if (offset == -1)
+	{
+		appendStringInfoString(out, "latest");
+	}
 }
 
 /*
@@ -552,34 +606,40 @@ kinesis_consume_main(Datum arg)
 	int si;
 	int i;
 	CopyStmt *copy;
-	Oid oid;
+	int id;
 	bool found = false;
 	KinesisConsumerInfo *cinfo;
 	kinesis_client *client;
 	kinesis_stream_metadata *stream_meta;
 	StringInfo batch_buffer;
 	KinesisConsumerState state;
+	StringInfo seqbuf;
 
 	pqsignal(SIGTERM, kinesis_consume_main_sigterm);
 	pqsignal(SIGSEGV, debug_segfault);
 
 	BackgroundWorkerUnblockSignals();
 
-	oid = DatumGetObjectId(arg);
+	id = Int32GetDatum(arg);
 
-	cinfo = hash_search(consumer_info, &oid, HASH_FIND, &found);
+	cinfo = hash_search(consumer_info, &id, HASH_FIND, &found);
 
 	Assert(found);
 	Assert(cinfo);
 
 	BackgroundWorkerInitializeConnectionByOid(cinfo->dboid, 0);
 
+	MemSet(&state, 0, sizeof(KinesisConsumerState));
+	memcpy(&state.proc_id, MyBgworkerEntry->bgw_extra, sizeof(int));
+
+	state.num_procs = cinfo->num_procs;
+
 	/* Load relevant metadata from kinesis tables, and grab the
 	 * stream metadata from AWS */
 
 	StartTransactionCommand();
-	load_consumer_state(&state, oid);
 
+	load_consumer_state(&state, id);
 	copy = get_copy_statement(&state);
 
 	kinesis_set_logger(NULL, log_fn);
@@ -607,15 +667,22 @@ kinesis_consume_main(Datum arg)
 	kinesis_client_destroy_stream_metadata(stream_meta);
 	CommitTransactionCommand();
 
+	seqbuf = makeStringInfo();
+
 	/* Create all the shard consumers and start them */
 
 	for (si = 0; si < state.num_shards; ++si)
 	{
+		formatSeqnum(seqbuf, state.shards[si].seqnum, cinfo->start_seq);
+
 		state.shards[si].kc = kinesis_consumer_create(client,
 				state.kinesis_stream,
 				state.shards[si].id,
-				state.shards[si].seqnum->data,
+				seqbuf->data,
 				state.batchsize);
+
+		if (!state.shards[si].kc)
+			elog(ERROR, "could not create consumer");
 
 		kinesis_consumer_start(state.shards[si].kc);
 	}
@@ -632,11 +699,9 @@ kinesis_consume_main(Datum arg)
 			ShardState *shard = &state.shards[si];
 			const kinesis_batch *batch = kinesis_consume(shard->kc, 1000);
 
+			/* timeout */
 			if (!batch)
-			{
-				/* timeout */
 				continue;
-			}
 
 			size = kinesis_batch_get_size(batch);
 
@@ -697,39 +762,49 @@ kinesis_consume_main(Datum arg)
  * Setup and launch a bgworker to consume kinesis shards
  */
 static void
-launch_worker(Oid oid)
+launch_worker(int id, int p, int s)
 {
+	int i = 0;
 	bool found = false;
-	BackgroundWorker worker;
 
 	KinesisConsumerInfo *info =
-		hash_search(consumer_info, &oid, HASH_ENTER, &found);
-
-	BackgroundWorkerHandle *tmp_handle;
+		hash_search(consumer_info, &id, HASH_ENTER, &found);
 
 	if (found)
 		return;
 
-	info->oid = oid;
+	info->id = id;
 	info->dboid = MyDatabaseId;
+	info->start_seq = s;
+	info->num_procs = p;
 
-	worker.bgw_main_arg = ObjectIdGetDatum(oid);
-	worker.bgw_flags = BGWORKER_BACKEND_DATABASE_CONNECTION |
-		BGWORKER_SHMEM_ACCESS;
-	worker.bgw_start_time = BgWorkerStart_RecoveryFinished;
-	worker.bgw_restart_time = BGW_NEVER_RESTART;
-	worker.bgw_main = NULL;
-	worker.bgw_notify_pid = 0;
+	for (i = 0; i < p; ++i)
+	{
+		BackgroundWorker worker;
+		BackgroundWorkerHandle *handle;
 
-	sprintf(worker.bgw_library_name, "pipeline_kinesis");
-	sprintf(worker.bgw_function_name, "kinesis_consume_main");
+		worker.bgw_main_arg = Int32GetDatum(id);
+		memset(worker.bgw_extra, 0, sizeof(worker.bgw_extra));
 
-	snprintf(worker.bgw_name, BGW_MAXLEN, "[kinesis consumer] %d", oid);
+		memcpy(worker.bgw_extra, &i, sizeof(int));
 
-	if (!RegisterDynamicBackgroundWorker(&worker, &tmp_handle))
-		elog(ERROR, "could not launch worker");
+		worker.bgw_flags = BGWORKER_BACKEND_DATABASE_CONNECTION |
+			BGWORKER_SHMEM_ACCESS;
+		worker.bgw_start_time = BgWorkerStart_RecoveryFinished;
+		worker.bgw_restart_time = BGW_NEVER_RESTART;
+		worker.bgw_main = NULL;
+		worker.bgw_notify_pid = 0;
 
-	info->handle = *tmp_handle;
+		sprintf(worker.bgw_library_name, "pipeline_kinesis");
+		sprintf(worker.bgw_function_name, "kinesis_consume_main");
+
+		snprintf(worker.bgw_name, BGW_MAXLEN, "[kinesis consumer] %d %d", id, i);
+
+		if (!RegisterDynamicBackgroundWorker(&worker, &handle))
+			elog(ERROR, "could not launch worker");
+
+		info->handle[i] = *handle;
+	}
 }
 
 /*
@@ -769,22 +844,26 @@ Datum
 kinesis_consume_begin_sr(PG_FUNCTION_ARGS)
 {
 	const char *query = "INSERT INTO pipeline_kinesis.consumers VALUES "
-		"($1, $2, $3, $4, $5, $6, $7, $8) "
+		"(default,$1,$2,$3,$4,$5,$6,$7,$8,$9) "
 		"ON CONFLICT(endpoint, stream, relation) "
-		"DO UPDATE SET (batchsize) = ($8) RETURNING oid;";
+		"DO UPDATE SET (format,delimiter,quote,escape,batchsize,parallelism) = "
+		"($4,$5,$6,$7,$8,$9) RETURNING id;";
 
 	Relation lockrel;
 	int rv;
 
-    Oid argtypes[8] = { TEXTOID, TEXTOID, TEXTOID, TEXTOID, TEXTOID, TEXTOID, TEXTOID, INT4OID };
-	Datum values[8];
-    char nulls[8];
+    Oid argtypes[9] = { TEXTOID, TEXTOID, TEXTOID, TEXTOID, TEXTOID, TEXTOID,
+		TEXTOID, INT4OID, INT4OID };
+	Datum values[9];
+    char nulls[9];
 
 	TupleTableSlot *slot;
 	bool isnull = false;
 	Datum d;
-	Oid oid;
+	int id;
 	int i;
+	int p;
+	int s;
 
 	MemSet(nulls, ' ', sizeof(nulls));
 
@@ -819,9 +898,22 @@ kinesis_consume_begin_sr(PG_FUNCTION_ARGS)
 	else
 		values[7] = PG_GETARG_DATUM(7);
 
+	/* parallelism */
+	if (PG_ARGISNULL(8))
+		values[8] = 1;
+	else
+		values[8] = PG_GETARG_DATUM(8);
+
+	if (PG_ARGISNULL(9))
+		s = -1;
+	else
+		s = PG_GETARG_INT32(9);
+
+	p = DatumGetInt32(values[8]);
+
 	SPI_connect();
 
-	rv = SPI_execute_with_args(query, 8, argtypes, values, nulls, false, 1);
+	rv = SPI_execute_with_args(query, 9, argtypes, values, nulls, false, 1);
 
 	if (rv != SPI_OK_INSERT_RETURNING)
 		elog(ERROR, "could not create consumer %d", rv);
@@ -830,9 +922,9 @@ kinesis_consume_begin_sr(PG_FUNCTION_ARGS)
 	ExecStoreTuple(SPI_tuptable->vals[0], slot, InvalidBuffer, false);
 
 	d = slot_getattr(slot, 1, &isnull);
-	oid = DatumGetObjectId(d);
+	id = DatumGetInt32(d);
 
-	launch_worker(oid);
+	launch_worker(id, p, s);
 	SPI_finish();
 
 	drop_consumer_lock(lockrel);
@@ -845,10 +937,10 @@ kinesis_consume_begin_sr(PG_FUNCTION_ARGS)
  *
  * find oid for a kinesis consumer matching (endpoint, stream, relation)
  */
-static Oid
+static int
 find_consumer(Datum endpoint, Datum stream, Datum relation)
 {
-	const char *query = "SELECT oid FROM pipeline_kinesis.consumers "
+	const char *query = "SELECT id FROM pipeline_kinesis.consumers "
 		"WHERE endpoint = $1 AND stream = $2 AND relation = $3;";
 
     Oid argtypes[3] = { TEXTOID, TEXTOID, TEXTOID };
@@ -877,9 +969,8 @@ find_consumer(Datum endpoint, Datum stream, Datum relation)
 	isnull = false;
 	d = slot_getattr(slot, 1, &isnull);
 
-	return DatumGetObjectId(d);
+	return DatumGetInt32(d);
 }
-
 
 /*
  * kinesis_consume_end_sr
@@ -891,20 +982,26 @@ Datum
 kinesis_consume_end_sr(PG_FUNCTION_ARGS)
 {
 	Relation lockrel = acquire_consumer_lock();
-	Oid oid;
+	int id;
 	bool found = false;
 	KinesisConsumerInfo *info;
+	int i = 0;
 
 	SPI_connect();
 
-	oid = find_consumer(PG_GETARG_DATUM(0),
+	id = find_consumer(PG_GETARG_DATUM(0),
 						PG_GETARG_DATUM(1),
 						PG_GETARG_DATUM(2));
 
-	info = hash_search(consumer_info, &oid, HASH_FIND, &found);
+	info = hash_search(consumer_info, &id, HASH_FIND, &found);
+	Assert(found);
 
-	TerminateBackgroundWorker(&info->handle);
-	hash_search(consumer_info, &oid, HASH_REMOVE, &found);
+	for (i = 0; i < info->num_procs; ++i)
+	{
+		TerminateBackgroundWorker(&info->handle[i]);
+	}
+
+	hash_search(consumer_info, &id, HASH_REMOVE, &found);
 
 	SPI_finish();
 	drop_consumer_lock(lockrel);
@@ -923,13 +1020,14 @@ kinesis_consume_begin_all(PG_FUNCTION_ARGS)
 {
 	Relation lockrel = acquire_consumer_lock();
 
-	const char *query = "SELECT oid FROM pipeline_kinesis.consumers;";
+	const char *query = "SELECT id,parallelism FROM pipeline_kinesis.consumers;";
 	int rv = 0;
 	int i = 0;
 	TupleTableSlot *slot;
 	Datum d;
 	Oid oid;
 	bool isnull;
+	int p;
 
 	SPI_connect();
 
@@ -945,8 +1043,12 @@ kinesis_consume_begin_all(PG_FUNCTION_ARGS)
 		ExecStoreTuple(SPI_tuptable->vals[i], slot, InvalidBuffer, false);
 		d = slot_getattr(slot, 1, &isnull);
 
-		oid = DatumGetObjectId(d);
-		launch_worker(oid);
+		oid = DatumGetInt32(d);
+
+		d = slot_getattr(slot, 2, &isnull);
+		p = DatumGetInt32(d);
+
+		launch_worker(oid, p, -1);
 	}
 
 	SPI_finish();
@@ -964,6 +1066,8 @@ PG_FUNCTION_INFO_V1(kinesis_consume_end_all);
 Datum
 kinesis_consume_end_all(PG_FUNCTION_ARGS)
 {
+	Relation lockrel = acquire_consumer_lock();
+
 	HASH_SEQ_STATUS iter;
 	List *ids = NIL;
 	ListCell *lc;
@@ -973,15 +1077,16 @@ kinesis_consume_end_all(PG_FUNCTION_ARGS)
 
 	while ((info = (KinesisConsumerInfo *) hash_seq_search(&iter)) != NULL)
 	{
-		TerminateBackgroundWorker(&info->handle);
-		ids = lappend_oid(ids, info->oid);
+//		TerminateBackgroundWorker(&info->handle);
+		ids = lappend_int(ids, info->id);
 	}
 
 	foreach(lc, ids)
 	{
-		Oid id = lfirst_oid(lc);
+		int id = lfirst_int(lc);
 		hash_search(consumer_info, &id, HASH_REMOVE, NULL);
 	}
 
+	drop_consumer_lock(lockrel);
 	RETURN_SUCCESS();
 }

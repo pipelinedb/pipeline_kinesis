@@ -6,10 +6,11 @@ CREATE TABLE pipeline_kinesis.endpoints (
   region text NOT NULL,
   credfile text,
   url text
-) WITH OIDS;
+);
 
 -- Consumers added with pipeline_kinesis.consume_begin
 CREATE TABLE pipeline_kinesis.consumers (
+  id serial PRIMARY KEY,
   endpoint text references pipeline_kinesis.endpoints(name),
   stream text NOT NULL,
   relation text NOT NULL,
@@ -18,11 +19,12 @@ CREATE TABLE pipeline_kinesis.consumers (
   quote text,
   escape text,
   batchsize integer NOT NULL,
-  PRIMARY KEY(endpoint, stream, relation)
-) WITH OIDS;
+  parallelism integer NOT NULL,
+  UNIQUE(endpoint, stream, relation)
+);
 
 CREATE TABLE pipeline_kinesis.seqnums (
-  consumer_id oid NOT NULL,
+  consumer_id int references pipeline_kinesis.consumers(id),
   shard_id text NOT NULL,
   seqnum text NOT NULL,
   PRIMARY KEY(consumer_id, shard_id)
@@ -54,7 +56,8 @@ CREATE FUNCTION pipeline_kinesis.consume_begin (
   quote text DEFAULT NULL,
   escape text DEFAULT NULL,
   batchsize integer DEFAULT 1000,
-  start_seq text DEFAULT NULL
+  parallelism integer DEFAULT 1,
+  start_seq integer DEFAULT NULL
 )
 RETURNS text
 AS 'MODULE_PATHNAME', 'kinesis_consume_begin_sr'
