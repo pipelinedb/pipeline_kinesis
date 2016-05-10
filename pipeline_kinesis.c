@@ -621,7 +621,6 @@ kinesis_consume_main(Datum arg)
 	BackgroundWorkerUnblockSignals();
 
 	id = Int32GetDatum(arg);
-
 	cinfo = hash_search(consumer_info, &id, HASH_FIND, &found);
 
 	Assert(found);
