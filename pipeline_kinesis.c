@@ -407,7 +407,7 @@ load_consumer_state(KinesisConsumerState *state, int id)
 /*
  * find_shard_id
  *
- * Locate the index of a particular shard inside the stream metadata
+ * Locate the index of a particular shard given its shard id
  */
 static int
 find_shard_id(KinesisConsumerState *state, const char *id)
@@ -623,17 +623,19 @@ kinesis_consume_main(Datum arg)
 
 	BackgroundWorkerUnblockSignals();
 
-	id = Int32GetDatum(arg);
-	cinfo = hash_search(consumer_info, &id, HASH_FIND, &found);
-
-	Assert(found);
-	Assert(cinfo);
-
-	BackgroundWorkerInitializeConnectionByOid(cinfo->dboid, 0);
-
 	MemSet(&state, 0, sizeof(KinesisConsumerState));
 	memcpy(&state.proc_id, MyBgworkerEntry->bgw_extra, sizeof(int));
 
+	id = Int32GetDatum(arg);
+	cinfo = hash_search(consumer_info, &id, HASH_FIND, &found);
+
+	if (!found)
+		elog(ERROR, "could not find consumer info for %d %d", id,
+				state.proc_id);
+
+	Assert(cinfo);
+
+	BackgroundWorkerInitializeConnectionByOid(cinfo->dboid, 0);
 	state.num_procs = cinfo->num_procs;
 
 	/* Load relevant metadata from kinesis tables, and grab the
@@ -775,6 +777,13 @@ launch_worker(int id, int para, int seq)
 	if (found)
 		return;
 
+	if (para > MAX_PROCS)
+	{
+		elog(LOG, "capping parallelism %d to %d for consumer %d",
+				para, MAX_PROCS, id);
+		para = MAX_PROCS;
+	}
+
 	info->id = id;
 	info->dboid = MyDatabaseId;
 	info->start_seq = seq;
@@ -911,6 +920,9 @@ kinesis_consume_begin_sr(PG_FUNCTION_ARGS)
 
 	para = DatumGetInt32(values[8]);
 
+//	if (para > MAX_PROCS)
+//		elog(ERROR, "max parallelism per stream is %d", MAX_PROCS);
+
 	SPI_connect();
 
 	rv = SPI_execute_with_args(query, 9, argtypes, values, nulls, false, 1);
@@ -935,7 +947,7 @@ kinesis_consume_begin_sr(PG_FUNCTION_ARGS)
 /*
  * find_consumer
  *
- * find oid for a kinesis consumer matching (endpoint, stream, relation)
+ * find id for a kinesis consumer matching (endpoint, stream, relation)
  */
 static int
 find_consumer(Datum endpoint, Datum stream, Datum relation)
@@ -961,13 +973,17 @@ find_consumer(Datum endpoint, Datum stream, Datum relation)
 	rv = SPI_execute_with_args(query, 4, argtypes, values, nulls, false, 1);
 
 	if (rv != SPI_OK_SELECT)
-		elog(ERROR, "could not find");
+		elog(ERROR, "find_consumer query failure %d", rv);
+
+	if (SPI_processed == 0)
+		return 0;
 
 	slot = MakeSingleTupleTableSlot(SPI_tuptable->tupdesc);
 	ExecStoreTuple(SPI_tuptable->vals[0], slot, InvalidBuffer, false);
 
 	isnull = false;
 	d = slot_getattr(slot, 1, &isnull);
+	Assert(!isnull);
 
 	return DatumGetInt32(d);
 }
@@ -993,8 +1009,12 @@ kinesis_consume_end_sr(PG_FUNCTION_ARGS)
 						PG_GETARG_DATUM(1),
 						PG_GETARG_DATUM(2));
 
+	if (id == 0)
+		elog(ERROR, "could not find consumer");
+
 	info = hash_search(consumer_info, &id, HASH_FIND, &found);
 	Assert(found);
+	Assert(info);
 
 	for (i = 0; i < info->num_procs; ++i)
 	{

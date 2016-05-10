@@ -295,6 +295,13 @@ kinesis_consumer_destroy(kinesis_consumer *kc)
 	if (kc->keep_running)
 		kinesis_consumer_stop(kc);
 
+	while (!kc->queue->unlocked_empty())
+	{
+		GetRecordsOutcome *popped;
+		kc->queue->unlocked_pop(popped);
+		delete popped;
+	}
+
 	delete kc->queue;
 	delete kc;
 }
