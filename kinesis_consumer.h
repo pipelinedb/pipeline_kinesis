@@ -43,7 +43,7 @@ void kinesis_client_destroy_stream_metadata(kinesis_stream_metadata *meta);
 
 void kinesis_client_destroy(kinesis_client *client);
 
-void kinesis_set_logger(void *ctx, kinesis_log_fn fn);
+void kinesis_set_logger(void *ctx, kinesis_log_fn fn, const char *level);
 
 kinesis_consumer * kinesis_consumer_create(kinesis_client *client,
 										   const char *stream,
