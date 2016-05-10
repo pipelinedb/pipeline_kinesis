@@ -11,7 +11,7 @@ CREATE TABLE pipeline_kinesis.endpoints (
 -- Consumers added with pipeline_kinesis.consume_begin
 CREATE TABLE pipeline_kinesis.consumers (
   id serial PRIMARY KEY,
-  endpoint text references pipeline_kinesis.endpoints(name),
+  endpoint text REFERENCES pipeline_kinesis.endpoints(name),
   stream text NOT NULL,
   relation text NOT NULL,
   format text    NOT NULL,
@@ -24,7 +24,7 @@ CREATE TABLE pipeline_kinesis.consumers (
 );
 
 CREATE TABLE pipeline_kinesis.seqnums (
-  consumer_id int references pipeline_kinesis.consumers(id),
+  consumer_id int REFERENCES pipeline_kinesis.consumers(id),
   shard_id text NOT NULL,
   seqnum text NOT NULL,
   PRIMARY KEY(consumer_id, shard_id)

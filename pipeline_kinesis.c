@@ -920,9 +920,6 @@ kinesis_consume_begin_sr(PG_FUNCTION_ARGS)
 
 	para = DatumGetInt32(values[8]);
 
-//	if (para > MAX_PROCS)
-//		elog(ERROR, "max parallelism per stream is %d", MAX_PROCS);
-
 	SPI_connect();
 
 	rv = SPI_execute_with_args(query, 9, argtypes, values, nulls, false, 1);
@@ -1017,9 +1014,7 @@ kinesis_consume_end_sr(PG_FUNCTION_ARGS)
 	Assert(info);
 
 	for (i = 0; i < info->num_procs; ++i)
-	{
 		TerminateBackgroundWorker(&info->handle[i]);
-	}
 
 	hash_search(consumer_info, &id, HASH_REMOVE, &found);
 
