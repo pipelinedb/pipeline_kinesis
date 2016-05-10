@@ -22,6 +22,7 @@
 #include <aws/core/client/DefaultRetryStrategy.h>
 #include <aws/core/utils/logging/LogMacros.h>
 #include <aws/kinesis/model/DescribeStreamRequest.h>
+#include <aws/core/utils/StringUtils.h>
 
 #include "kinesis_consumer.h"
 #include "conc_queue.hpp"
@@ -199,6 +200,43 @@ kinesis_client_destroy(kinesis_client *client)
 	delete (KinesisClient *)(client);
 }
 
+// parse a formatted seqnum such as 'after_sequence_number:324342423..' and
+// set the appropriate options on a shard iterator request
+static bool
+parse_seqnum(GetShardIteratorRequest &request, const char *seqnum)
+{
+	Aws::Vector<Aws::String> tokens = StringUtils::Split(seqnum, ':');
+
+	if (tokens.size() == 0)
+		return false;
+
+	if (tokens[0] == "after_sequence_number")
+	{
+		if (tokens.size() != 2)
+			return false;
+
+		request.SetShardIteratorType(ShardIteratorType::AFTER_SEQUENCE_NUMBER);
+		request.SetStartingSequenceNumber(tokens[1]);
+	}
+	else if (tokens[0] == "trim_horizon")
+	{
+		if (tokens.size() != 1)
+			return false;
+
+		request.SetShardIteratorType(ShardIteratorType::TRIM_HORIZON);
+	}
+	else if (tokens[0] == "latest")
+	{
+		if (tokens.size() != 1)
+			return false;
+		request.SetShardIteratorType(ShardIteratorType::LATEST);
+	}
+	else
+		return false;
+
+	return true;
+}
+
 // create the state for the consumer.
 // note - this is a blocking call wrt obtaining the shard iterator.
 // on error this returns NULL.
@@ -215,15 +253,10 @@ kinesis_consumer_create(kinesis_client *k,
 	request.SetStreamName(stream);
 	request.SetShardId(shard);
 
-	if (strlen(seqnum) == 0)
-	{
-		request.SetShardIteratorType(ShardIteratorType::TRIM_HORIZON);
-	}
-	else
-	{
-		request.SetShardIteratorType(ShardIteratorType::AFTER_SEQUENCE_NUMBER);
-		request.SetStartingSequenceNumber(seqnum);
-	}
+	bool ok = parse_seqnum(request, seqnum);
+
+	if (!ok)
+		AWS_LOG_ERROR("kinesis_consumer", "could not parse seq %s", seqnum);
 
 	auto outcome = kc->GetShardIterator(request);
 
@@ -261,6 +294,13 @@ kinesis_consumer_destroy(kinesis_consumer *kc)
 {
 	if (kc->keep_running)
 		kinesis_consumer_stop(kc);
+
+	while (!kc->queue->unlocked_empty())
+	{
+		GetRecordsOutcome *popped;
+		kc->queue->unlocked_pop(popped);
+		delete popped;
+	}
 
 	delete kc->queue;
 	delete kc;

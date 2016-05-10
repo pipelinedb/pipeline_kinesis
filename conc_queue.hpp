@@ -33,6 +33,22 @@ class concurrent_queue
 		return queue_.empty();
 	}
 
+	bool unlocked_empty() const
+	{
+		return queue_.empty();
+	}
+
+	bool unlocked_pop(Data &popped)
+	{
+		if (queue_.empty())
+			return false;
+
+		popped = queue_.front();
+		queue_.pop();
+
+		return true;
+	}
+
 	// push item onto the queue, wait up to ms if q full
 	bool push_with_timeout(Data const& data, int ms)
 	{
