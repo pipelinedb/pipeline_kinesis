@@ -559,9 +559,6 @@ save_consumer_state(KinesisConsumerState *state)
 	{
 		int rv = 0;
 
-		if (i % state->num_procs != state->proc_id)
-			continue;
-
 		values[0] = Int32GetDatum(state->consumer_id);
 		values[1] = CStringGetTextDatum(state->shards[i].id);
 		values[2] = CStringGetTextDatum(state->shards[i].seqnum->data);
@@ -575,8 +572,14 @@ save_consumer_state(KinesisConsumerState *state)
 	SPI_finish();
 }
 
+/*
+ * format_seqnum
+ *
+ * Convert saved sequence number (if any) and start offset into a
+ * formatted sequence number
+ */
 static void
-formatSeqnum(StringInfo out, StringInfo in, int offset)
+format_seqnum(StringInfo out, StringInfo in, int offset)
 {
 	resetStringInfo(out);
 
@@ -672,7 +675,7 @@ kinesis_consume_main(Datum arg)
 
 	for (si = 0; si < state.num_shards; ++si)
 	{
-		formatSeqnum(seqbuf, state.shards[si].seqnum, cinfo->start_seq);
+		format_seqnum(seqbuf, state.shards[si].seqnum, cinfo->start_seq);
 
 		state.shards[si].kc = kinesis_consumer_create(client,
 				state.kinesis_stream,
@@ -758,10 +761,10 @@ kinesis_consume_main(Datum arg)
 /*
  * launch_worker
  *
- * Setup and launch a bgworker to consume kinesis shards
+ * Setup and launch parallel bgworkers to consume kinesis shards
  */
 static void
-launch_worker(int id, int p, int s)
+launch_worker(int id, int para, int seq)
 {
 	int i = 0;
 	bool found = false;
@@ -774,17 +777,15 @@ launch_worker(int id, int p, int s)
 
 	info->id = id;
 	info->dboid = MyDatabaseId;
-	info->start_seq = s;
-	info->num_procs = p;
+	info->start_seq = seq;
+	info->num_procs = para;
 
-	for (i = 0; i < p; ++i)
+	for (i = 0; i < para; ++i)
 	{
 		BackgroundWorker worker;
 		BackgroundWorkerHandle *handle;
 
 		worker.bgw_main_arg = Int32GetDatum(id);
-		memset(worker.bgw_extra, 0, sizeof(worker.bgw_extra));
-
 		memcpy(worker.bgw_extra, &i, sizeof(int));
 
 		worker.bgw_flags = BGWORKER_BACKEND_DATABASE_CONNECTION |
@@ -861,8 +862,8 @@ kinesis_consume_begin_sr(PG_FUNCTION_ARGS)
 	Datum d;
 	int id;
 	int i;
-	int p;
-	int s;
+	int para;
+	int seq;
 
 	MemSet(nulls, ' ', sizeof(nulls));
 
@@ -904,11 +905,11 @@ kinesis_consume_begin_sr(PG_FUNCTION_ARGS)
 		values[8] = PG_GETARG_DATUM(8);
 
 	if (PG_ARGISNULL(9))
-		s = -1;
+		seq = -1;
 	else
-		s = PG_GETARG_INT32(9);
+		seq = PG_GETARG_INT32(9);
 
-	p = DatumGetInt32(values[8]);
+	para = DatumGetInt32(values[8]);
 
 	SPI_connect();
 
@@ -923,7 +924,7 @@ kinesis_consume_begin_sr(PG_FUNCTION_ARGS)
 	d = slot_getattr(slot, 1, &isnull);
 	id = DatumGetInt32(d);
 
-	launch_worker(id, p, s);
+	launch_worker(id, para, seq);
 	SPI_finish();
 
 	drop_consumer_lock(lockrel);
@@ -1026,7 +1027,7 @@ kinesis_consume_begin_all(PG_FUNCTION_ARGS)
 	Datum d;
 	Oid oid;
 	bool isnull;
-	int p;
+	int para;
 
 	SPI_connect();
 
@@ -1045,9 +1046,9 @@ kinesis_consume_begin_all(PG_FUNCTION_ARGS)
 		oid = DatumGetInt32(d);
 
 		d = slot_getattr(slot, 2, &isnull);
-		p = DatumGetInt32(d);
+		para = DatumGetInt32(d);
 
-		launch_worker(oid, p, -1);
+		launch_worker(oid, para, -1);
 	}
 
 	SPI_finish();
@@ -1071,12 +1072,17 @@ kinesis_consume_end_all(PG_FUNCTION_ARGS)
 	List *ids = NIL;
 	ListCell *lc;
 	KinesisConsumerInfo *info;
+	int i;
 
 	hash_seq_init(&iter, consumer_info);
 
 	while ((info = (KinesisConsumerInfo *) hash_seq_search(&iter)) != NULL)
 	{
-//		TerminateBackgroundWorker(&info->handle);
+		for (i = 0; i < info->num_procs; ++i)
+		{
+			TerminateBackgroundWorker(&info->handle[i]);
+		}
+
 		ids = lappend_int(ids, info->id);
 	}
 

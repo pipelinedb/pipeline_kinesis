@@ -200,6 +200,8 @@ kinesis_client_destroy(kinesis_client *client)
 	delete (KinesisClient *)(client);
 }
 
+// parse a formatted seqnum such as 'after_sequence_number:324342423..' and
+// set the appropriate options on a shard iterator request
 static bool
 parse_seqnum(GetShardIteratorRequest &request, const char *seqnum)
 {
@@ -255,8 +257,6 @@ kinesis_consumer_create(kinesis_client *k,
 
 	if (!ok)
 		AWS_LOG_ERROR("kinesis_consumer", "could not parse seq %s", seqnum);
-
-	AWS_LOG_INFO("kinesis_consumer", "start seq %s", seqnum);
 
 	auto outcome = kc->GetShardIterator(request);
 
