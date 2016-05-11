@@ -72,12 +72,12 @@ RETURNS text
 AS 'MODULE_PATHNAME', 'kinesis_consume_end_sr'
 LANGUAGE C VOLATILE;
 
-CREATE FUNCTION pipeline_kinesis.consume_begin_all()
+CREATE FUNCTION pipeline_kinesis.consume_begin()
 RETURNS text
 AS 'MODULE_PATHNAME', 'kinesis_consume_begin_all'
 LANGUAGE C VOLATILE;
 
-CREATE FUNCTION pipeline_kinesis.consume_end_all()
+CREATE FUNCTION pipeline_kinesis.consume_end()
 RETURNS text
 AS 'MODULE_PATHNAME', 'kinesis_consume_end_all'
 LANGUAGE C VOLATILE;

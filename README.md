@@ -122,6 +122,7 @@ To verify that ingestion is occurring, you can examine the kinesis metadata:
            1 | shardId-000000000000 | 49561816305110483585113272267407
            1 | shardId-000000000001 | 49561816376495168965609796943461
            1 | shardId-000000000002 | 49561747276320427351761056013869
+		   ...
 ```
 
 Repeating this query a few times when the ingestion is happening should show 
