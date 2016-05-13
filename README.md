@@ -4,7 +4,7 @@ PipelineDB extension for Amazon Kinesis support.
 
 ## Requirements
 
-To run the program, you must first build and install the aws-cpp-sdk:
+To run the program, you must first build and install the `aws-cpp-sdk`:
 
 ```
 git clone https://github.com/aws/aws-sdk-cpp
@@ -13,7 +13,7 @@ git checkout tags/0.10.9
 mkdir build
 cd build
 
-cmake -DBUILD_ONLY=aws-cpp-sdk-kinesis -DCMAKE_BUILD_TYPE=Debug ../
+cmake -DBUILD_ONLY=aws-cpp-sdk-kinesis -DCMAKE_BUILD_TYPE=Release ../
 make VERBOSE=1
 sudo make install
 cd /usr/lib
@@ -62,7 +62,7 @@ Create a pipeline stream to insert into:
 
 ```
 CREATE STREAM foo_stream (payload text);
-CREATE continuous view foo_view as SELECT payload, count(*) from foo_stream group by payload;
+CREATE CONTINUOUS VIEW foo_view as SELECT payload, count(*) FROM foo_stream GROUP BY payload;
 ```
 
 Start ingestion:
@@ -115,7 +115,7 @@ All existing consumers can be started or stopped at once by not passing any argu
 To verify that ingestion is occurring, you can examine the kinesis metadata:
 
 ```
-=# select * from pipeline_kinesis.seqnums order by shard_id;
+=# SELECT * FROM pipeline_kinesis.seqnums ORDER BY shard_id;
 
  consumer_id |       shard_id       |                          seqnum 
 -------------+----------------------+---------------------------------
@@ -125,5 +125,4 @@ To verify that ingestion is occurring, you can examine the kinesis metadata:
 		   ...
 ```
 
-Repeating this query a few times when the ingestion is happening should show 
-the sequence numbers changing.
+Repeating this query a few times when the ingestion is happening should show the sequence numbers changing.
