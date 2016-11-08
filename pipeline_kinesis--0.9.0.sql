@@ -12,7 +12,7 @@ CREATE TABLE pipeline_kinesis.endpoints (
 CREATE TABLE pipeline_kinesis.consumers (
   id serial PRIMARY KEY,
   endpoint text REFERENCES pipeline_kinesis.endpoints(name),
-  stream text NOT NULL,
+  "stream" text NOT NULL,
   relation text NOT NULL,
   format text    NOT NULL,
   delimiter text,
@@ -20,7 +20,7 @@ CREATE TABLE pipeline_kinesis.consumers (
   escape text,
   batchsize integer NOT NULL,
   parallelism integer NOT NULL,
-  UNIQUE(endpoint, stream, relation)
+  UNIQUE(endpoint, "stream", relation)
 );
 
 CREATE TABLE pipeline_kinesis.seqnums (
@@ -49,7 +49,7 @@ LANGUAGE C VOLATILE;
 
 CREATE FUNCTION pipeline_kinesis.consume_begin (
   endpoint text,
-  stream text,
+  "stream" text,
   relation text,
   format text DEFAULT 'text',
   delimiter text DEFAULT E'\t',
@@ -65,7 +65,7 @@ LANGUAGE C VOLATILE;
 
 CREATE FUNCTION pipeline_kinesis.consume_end (
   endpoint text,
-  stream text,
+  "stream" text,
   relation text
 )
 RETURNS text
