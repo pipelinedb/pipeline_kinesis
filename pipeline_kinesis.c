@@ -860,7 +860,7 @@ kinesis_consume_begin_sr(PG_FUNCTION_ARGS)
 {
 	const char *query = "INSERT INTO pipeline_kinesis.consumers VALUES "
 		"(default,$1,$2,$3,$4,$5,$6,$7,$8,$9) "
-		"ON CONFLICT(endpoint, "stream", relation) "
+		"ON CONFLICT(endpoint, \"stream\", relation) "
 		"DO UPDATE SET (format,delimiter,quote,escape,batchsize,parallelism) = "
 		"($4,$5,$6,$7,$8,$9) RETURNING id;";
 
