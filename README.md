@@ -17,8 +17,9 @@ cmake -DBUILD_ONLY=aws-cpp-sdk-kinesis -DCMAKE_BUILD_TYPE=Release ../
 make VERBOSE=1
 sudo make install
 cd /usr/lib
-sudo ln -s /usr/local/lib/linux/intel64/Debug/libaws-cpp-sdk-core.so
-sudo ln -s /usr/local/lib/linux/intel64/Debug/libaws-cpp-sdk-kinesis.so 
+sudo ln -s /usr/local/lib/linux/intel64/Release/libaws-cpp-sdk-core.so libaws-cpp-sdk-core.so
+sudo ln -s /usr/local/lib/linux/intel64/Release/libaws-cpp-sdk-kinesis.so libaws-cpp-sdk-kinesis.so
+sudo ldconfig -v
 ```
 
 ## Installing
@@ -75,7 +76,7 @@ If all goes well, your view should have some data in it:
 
 ```
 pipeline=# SELECT * from foo_view;
- payload | count 
+ payload | count
 ---------+-------
  foo5    |    11
  foo3    |    11
@@ -117,7 +118,7 @@ To verify that ingestion is occurring, you can examine the kinesis metadata:
 ```
 =# SELECT * FROM pipeline_kinesis.seqnums ORDER BY shard_id;
 
- consumer_id |       shard_id       |                          seqnum 
+ consumer_id |       shard_id       |                          seqnum
 -------------+----------------------+---------------------------------
            1 | shardId-000000000000 | 49561816305110483585113272267407
            1 | shardId-000000000001 | 49561816376495168965609796943461
